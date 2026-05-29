@@ -47,6 +47,30 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh && sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
 ```
 
+## 部署完成后常用命令
+
+一键部署完成后，终端会直接打印下面这些重要信息：
+
+- ESP32-S3 固件需要填写的 `WS_HOST`、`WS_PORT`、`WS_TOKEN`。
+- 云端配置文件位置：`/opt/esp32-ai-voice-cloud/.env`。
+- VPS 快捷管理菜单命令。
+
+最常用的是这个菜单：
+
+```bash
+sudo bash /opt/esp32-ai-voice-cloud/manage.sh
+```
+
+菜单可以修改 WebSocket 端口、WebSocket 令牌、AI API Key，也可以重启服务、查看状态、查看日志和运行诊断。
+
+其他常用命令：
+
+```bash
+sudo bash /opt/esp32-ai-voice-cloud/scripts/doctor.sh
+cd /opt/esp32-ai-voice-cloud && docker compose ps
+cd /opt/esp32-ai-voice-cloud && docker compose logs -f
+```
+
 ## 自动识别系统的旧入口
 
 如果你不确定 VPS 是 Debian 还是 Ubuntu，也可以使用自动识别脚本：
@@ -109,13 +133,20 @@ Enter AI API key [optional, press Enter to skip]:
 
 ```text
 Deployment complete.
+
+=== ESP32 firmware config ===
 WebSocket URL: ws://你的VPS公网IP:你选择的端口/ws
 WebSocket token: 生成或自定义的令牌
 Set ESP32 WS_HOST to: 你的VPS公网IP
 Set ESP32 WS_PORT to: 你选择的端口
 Set ESP32 WS_TOKEN to: 生成或自定义的令牌
+
+=== VPS common commands ===
 Cloud config file: /opt/esp32-ai-voice-cloud/.env
-Management menu: sudo bash /opt/esp32-ai-voice-cloud/manage.sh
+Open management menu: sudo bash /opt/esp32-ai-voice-cloud/manage.sh
+Run health doctor: sudo bash /opt/esp32-ai-voice-cloud/scripts/doctor.sh
+View service status: cd /opt/esp32-ai-voice-cloud && docker compose ps
+View logs: cd /opt/esp32-ai-voice-cloud && docker compose logs -f
 ```
 
 把这些值填入 ESP32-S3 固件项目的 `include/config.h`。
