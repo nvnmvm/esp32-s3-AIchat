@@ -75,6 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 - 创建 `.env` 配置文件。
 - 检查本机防火墙；如果 `ufw` 或 `firewalld` 正在运行，会自动放行 TCP `8000`。
 - 执行 `docker compose up -d --build` 启动服务。
+- 给容器配置健康检查，方便后续排查服务是否正常。
 
 注意：脚本只能检查 VPS 系统内部防火墙，不能自动修改云平台安全组。阿里云、腾讯云、AWS 等控制台里的安全组仍需要手动放行 TCP `8000`。
 
@@ -160,6 +161,26 @@ ESP32 connected
 Received text ...
 Echoed text ...
 ```
+
+## 运行诊断
+
+如果部署后 ESP32-S3 连不上，可以先在 VPS 上运行诊断脚本：
+
+```bash
+cd /opt/esp32-ai-voice-cloud
+sudo bash scripts/doctor.sh
+```
+
+诊断脚本会检查：
+
+- Docker 和 Docker Compose 是否可用。
+- 项目目录和 `.env` 是否存在。
+- 容器状态。
+- `http://127.0.0.1:8000/health` 是否可访问。
+- TCP `8000` 是否正在监听。
+- 本机防火墙状态。
+
+注意：云平台安全组无法从 VPS 内部自动检查，仍然需要去云服务器控制台确认 TCP `8000` 已放行。
 
 ## 一键卸载
 
@@ -264,6 +285,9 @@ WS_TOKEN=你的WebSocket令牌
 ALLOW_EMPTY_TOKEN=false
 AI_API_KEY=后续AI阶段使用
 LOG_LEVEL=INFO
+LOG_PAYLOADS=false
+MAX_WS_MESSAGE_BYTES=1048576
+APP_VERSION=v1.0.0-phase1
 ```
 
 手动部署后检查服务：
@@ -277,6 +301,24 @@ curl -fsS http://127.0.0.1:8000/health
 
 ```bash
 sudo ufw allow 8000/tcp
+```
+
+## 工程化说明
+
+本仓库阶段一已经补齐以下基础工程能力，后续阶段会继续沿用：
+
+- `tests/`：云端服务的基础自动化测试。
+- `.github/workflows/ci.yml`：GitHub Actions 会执行 Python 测试、Shell 脚本语法检查和 Docker 构建。
+- Docker healthcheck：容器会定期检查 `/health`。
+- `scripts/doctor.sh`：部署后的 VPS 自诊断脚本。
+- `SECURITY.md`：令牌、日志和消息大小限制说明。
+- `MAX_WS_MESSAGE_BYTES`：限制单条 WebSocket 消息大小，避免异常大包拖垮服务。
+- `LOG_PAYLOADS=false`：默认不把消息正文写进日志，减少隐私泄露风险。
+
+更完整的成熟度分析和后续改进计划见：
+
+```text
+docs/maturity-roadmap.md
 ```
 
 ## 常见问题
