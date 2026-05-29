@@ -50,12 +50,54 @@ require_docker() {
   fi
 }
 
+check_firewall() {
+  local port="$1"
+
+  echo "Checking local firewall for TCP port ${port}..."
+
+  if command -v ufw >/dev/null 2>&1; then
+    if ufw status | grep -qi '^Status: active'; then
+      ufw allow "${port}/tcp"
+      echo "ufw is active; allowed TCP ${port}."
+      return
+    fi
+    echo "ufw is installed but inactive."
+  fi
+
+  if command -v firewall-cmd >/dev/null 2>&1; then
+    if firewall-cmd --state >/dev/null 2>&1; then
+      firewall-cmd --permanent --add-port="${port}/tcp"
+      firewall-cmd --reload
+      echo "firewalld is active; allowed TCP ${port}."
+      return
+    fi
+    echo "firewalld is installed but inactive."
+  fi
+
+  echo "No active local firewall was detected by this script."
+  echo "If this is a cloud VPS, still open TCP ${port} in the provider security group."
+}
+
+check_port_mapping() {
+  local port="$1"
+
+  if command -v ss >/dev/null 2>&1; then
+    if ss -lnt | awk '{print $4}' | grep -Eq "(^|:)${port}$"; then
+      echo "TCP ${port} is listening locally."
+    else
+      echo "Warning: TCP ${port} is not visible in local listening sockets yet." >&2
+    fi
+  fi
+}
+
 main() {
   require_docker
 
   token="$(read_token)"
   server_port="${SERVER_PORT:-8000}"
   ai_api_key="${AI_API_KEY:-replace-in-next-phase}"
+
+  check_firewall "$server_port"
 
   cat >"$ENV_FILE" <<EOF
 SERVER_PORT=$server_port
@@ -67,6 +109,7 @@ EOF
 
   cd "$PROJECT_DIR"
   docker compose up -d --build
+  check_port_mapping "$server_port"
 
   public_ip="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}' || true)"
   public_ip="${public_ip:-YOUR_VPS_PUBLIC_IP}"
