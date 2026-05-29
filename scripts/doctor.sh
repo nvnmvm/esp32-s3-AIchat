@@ -41,10 +41,21 @@ check_container() {
 }
 
 check_health() {
-  curl -fsS "http://127.0.0.1:${PORT}/health" >/tmp/esp32-ai-health.json
-  ok "Local health endpoint is reachable: http://127.0.0.1:${PORT}/health"
-  cat /tmp/esp32-ai-health.json
-  echo
+  local attempt
+
+  for attempt in 1 2 3 4 5; do
+    if curl -fsS "http://127.0.0.1:${PORT}/health" >/tmp/esp32-ai-health.json; then
+      ok "Local health endpoint is reachable: http://127.0.0.1:${PORT}/health"
+      cat /tmp/esp32-ai-health.json
+      echo
+      return
+    fi
+
+    warn "Health endpoint is not ready yet; retry ${attempt}/5"
+    sleep 2
+  done
+
+  fail "Local health endpoint is not reachable: http://127.0.0.1:${PORT}/health"
 }
 
 check_port() {
