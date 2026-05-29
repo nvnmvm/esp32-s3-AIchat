@@ -164,6 +164,9 @@ main() {
   if [ -f "$INSTALL_DIR/scripts/doctor.sh" ]; then
     chmod +x "$INSTALL_DIR/scripts/doctor.sh"
   fi
+  if [ -f "$INSTALL_DIR/manage.sh" ]; then
+    chmod +x "$INSTALL_DIR/manage.sh"
+  fi
   "$INSTALL_DIR/deploy.sh"
 }
 
