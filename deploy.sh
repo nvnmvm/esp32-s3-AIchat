@@ -13,29 +13,96 @@ random_token() {
 }
 
 read_token() {
-  echo "Choose WebSocket token mode:" >&2
-  echo "1) Random token" >&2
-  echo "2) Custom token" >&2
-  read -r -p "Select [1]: " mode
-  mode="${mode:-1}"
+  if [ -n "${WS_TOKEN:-}" ]; then
+    echo "Choose WebSocket token mode:" >&2
+    echo "1) Keep existing token" >&2
+    echo "2) Random token" >&2
+    echo "3) Custom token" >&2
+    read -r -p "Select [1]: " mode
+    mode="${mode:-1}"
 
-  if [ "$mode" = "2" ]; then
-    read -r -p "Enter custom WebSocket token: " token
-    if [ -z "$token" ]; then
-      echo "Token cannot be empty." >&2
-      exit 1
-    fi
-    case "$token" in
-      *[[:space:]]*)
-        echo "Token cannot contain whitespace." >&2
+    case "$mode" in
+      1)
+        printf '%s' "$WS_TOKEN"
+        return
+        ;;
+      2)
+        token="$(random_token)"
+        ;;
+      3)
+        read -r -p "Enter custom WebSocket token: " token
+        ;;
+      *)
+        echo "Unknown token mode." >&2
         exit 1
         ;;
     esac
   else
-    token="$(random_token)"
+    echo "Choose WebSocket token mode:" >&2
+    echo "1) Random token" >&2
+    echo "2) Custom token" >&2
+    read -r -p "Select [1]: " mode
+    mode="${mode:-1}"
+
+    if [ "$mode" = "2" ]; then
+      read -r -p "Enter custom WebSocket token: " token
+    else
+      token="$(random_token)"
+    fi
   fi
 
+  if [ -z "$token" ]; then
+    echo "Token cannot be empty." >&2
+    exit 1
+  fi
+  case "$token" in
+    *[[:space:]]*)
+      echo "Token cannot contain whitespace." >&2
+      exit 1
+      ;;
+  esac
+
   printf '%s' "$token"
+}
+
+load_existing_env() {
+  if [ -f "$ENV_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$ENV_FILE"
+  fi
+}
+
+read_port() {
+  local default_port="${SERVER_PORT:-8000}"
+  local port
+
+  read -r -p "Enter WebSocket server port [${default_port}]: " port
+  port="${port:-$default_port}"
+
+  case "$port" in
+    ''|*[!0-9]*)
+      echo "Port must be a number." >&2
+      exit 1
+      ;;
+  esac
+
+  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+    echo "Port must be between 1 and 65535." >&2
+    exit 1
+  fi
+
+  printf '%s' "$port"
+}
+
+read_ai_api_key() {
+  local api_key
+
+  read -r -p "Enter AI API key [optional, press Enter to skip]: " api_key
+  if [ -z "$api_key" ]; then
+    api_key="${AI_API_KEY:-}"
+  fi
+
+  printf '%s' "$api_key"
 }
 
 require_docker() {
@@ -92,10 +159,11 @@ check_port_mapping() {
 
 main() {
   require_docker
+  load_existing_env
 
   token="$(read_token)"
-  server_port="${SERVER_PORT:-8000}"
-  ai_api_key="${AI_API_KEY:-replace-in-next-phase}"
+  server_port="$(read_port)"
+  ai_api_key="$(read_ai_api_key)"
 
   check_firewall "$server_port"
 
@@ -124,6 +192,9 @@ EOF
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
+  echo "Cloud config file: $ENV_FILE"
+  echo "Management menu: sudo bash $PROJECT_DIR/manage.sh"
+  echo "If this is a cloud VPS, open TCP ${server_port} in the provider security group."
 }
 
 main "$@"
