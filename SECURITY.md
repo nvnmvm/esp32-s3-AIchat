@@ -6,8 +6,25 @@
 
 - `WS_TOKEN` 必须改成随机长令牌，不要使用示例值。
 - `ALLOW_EMPTY_TOKEN` 保持为 `false`。
-- 只开放必要端口，默认只需要 TCP `8000`。
+- 只开放必要端口，默认是 TCP `8000`，也可以在部署时改成其他端口。
 - 云平台安全组和 VPS 本机防火墙都要检查。
+- AI API Key 只放云端 `.env`，不要写入 ESP32 固件。
+
+## 配置文件
+
+云端配置文件：
+
+```text
+/opt/esp32-ai-voice-cloud/.env
+```
+
+可以通过快捷菜单修改端口、WebSocket 令牌和 AI API Key：
+
+```bash
+sudo bash /opt/esp32-ai-voice-cloud/manage.sh
+```
+
+ESP32-S3 固件只保留本地 `include/config.h`，仓库只提交 `include/config.example.h` 模板。
 
 ## 日志隐私
 
