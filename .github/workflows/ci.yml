@@ -30,7 +30,7 @@ jobs:
         run: pytest -q
 
       - name: Validate shell scripts
-        run: bash -n deploy.sh install.sh install-debian.sh install-ubuntu.sh uninstall.sh scripts/doctor.sh
+        run: bash -n deploy.sh install.sh install-debian.sh install-ubuntu.sh manage.sh uninstall.sh scripts/doctor.sh
 
       - name: Build Docker image
         run: docker build -t esp32-ai-voice-cloud:test .
