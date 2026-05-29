@@ -187,13 +187,20 @@ EOF
 
   echo
   echo "Deployment complete."
+  echo
+  echo "=== ESP32 firmware config ==="
   echo "WebSocket URL: ws://${public_ip}:${server_port}/ws"
   echo "WebSocket token: $token"
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
+  echo
+  echo "=== VPS common commands ==="
   echo "Cloud config file: $ENV_FILE"
-  echo "Management menu: sudo bash $PROJECT_DIR/manage.sh"
+  echo "Open management menu: sudo bash $PROJECT_DIR/manage.sh"
+  echo "Run health doctor: sudo bash $PROJECT_DIR/scripts/doctor.sh"
+  echo "View service status: cd $PROJECT_DIR && docker compose ps"
+  echo "View logs: cd $PROJECT_DIR && docker compose logs -f"
   echo "If this is a cloud VPS, open TCP ${server_port} in the provider security group."
 }
 
