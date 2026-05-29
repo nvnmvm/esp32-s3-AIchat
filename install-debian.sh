@@ -161,6 +161,9 @@ main() {
   if [ -f "$INSTALL_DIR/uninstall.sh" ]; then
     chmod +x "$INSTALL_DIR/uninstall.sh"
   fi
+  if [ -f "$INSTALL_DIR/scripts/doctor.sh" ]; then
+    chmod +x "$INSTALL_DIR/scripts/doctor.sh"
+  fi
   "$INSTALL_DIR/deploy.sh"
 }
 
