@@ -207,3 +207,40 @@ sudo bash ./deploy.sh
 ```
 
 然后把新令牌同步修改到 ESP32-S3 固件的 `include/config.h`。
+
+## 后续阶段迭代计划
+
+本仓库会和 ESP32-S3 固件仓库一起迭代。
+
+计划按阶段推进：
+
+- `phase-1`：WebSocket 通信打通，只做 echo 测试。
+- `phase-2`：接收 ESP32-S3 上传的音频数据，并为后续 ASR 做准备。
+- `phase-3`：接入 ASR、AI 对话、TTS，并把回复结果传回 ESP32-S3。
+
+## GitHub 版本管理方式
+
+后续每完成一个阶段，会按下面方式管理两个仓库：
+
+- `main` 分支：始终保存当前最新可用版本。
+- `phase-1`、`phase-2`、`phase-3` 分支：用于对应阶段开发和修复。
+- `v1.0.0-phase1`、`v2.0.0-phase2`、`v3.0.0-phase3` 标签：用于固定每个阶段完成时的代码。
+- GitHub Release：每个标签会发布一个 Release，说明本阶段功能、部署方式、固件配套版本和注意事项。
+- README：每个阶段完成时都会同步更新 README；Git tag 会保存当时的 README，所以以后可以回看每个阶段对应的说明。
+
+推荐工作流：
+
+```bash
+git checkout -b phase-2
+# 开发阶段二
+git commit -m "Add phase 2 audio receive service"
+git push -u origin phase-2
+
+# 阶段二稳定后合并到 main，并打标签
+git checkout main
+git merge phase-2
+git tag v2.0.0-phase2
+git push origin main --tags
+```
+
+实际后续我会直接基于这两个仓库继续改，不会重新另起项目。
