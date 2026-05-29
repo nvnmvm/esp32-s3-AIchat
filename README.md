@@ -32,7 +32,7 @@ After deployment, copy the printed `WS_HOST`, `WS_PORT`, and `WS_TOKEN` into `..
 
 ## One-Line VPS Install From GitHub
 
-Run this on a Debian/Ubuntu VPS:
+Run this on a Debian or Ubuntu VPS:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh
@@ -42,6 +42,7 @@ sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
 The installer will:
 
 - install Docker, Docker Compose, Git, Curl, and OpenSSL
+- use the distro Docker packages first, then fall back to Docker's official apt repository if needed
 - clone or update the project under `/opt/esp32-ai-voice-cloud`
 - ask whether to generate a random WebSocket token or use a custom one
 - create `.env`

@@ -8,7 +8,7 @@ random_token() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -hex 24
   else
-    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48
+    date +%s%N | sha256sum | awk '{print $1}'
   fi
 }
 
@@ -68,7 +68,8 @@ EOF
   cd "$PROJECT_DIR"
   docker compose up -d --build
 
-  public_ip="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}')"
+  public_ip="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}' || true)"
+  public_ip="${public_ip:-YOUR_VPS_PUBLIC_IP}"
 
   echo
   echo "Deployment complete."
