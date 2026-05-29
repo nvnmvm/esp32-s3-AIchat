@@ -1,0 +1,9 @@
+services:
+  esp32-ai-voice-cloud:
+    build: .
+    container_name: esp32-ai-voice-cloud
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${SERVER_PORT:-8000}:8000"
