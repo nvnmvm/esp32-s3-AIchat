@@ -158,6 +158,9 @@ main() {
   install_packages
   fetch_project
   chmod +x "$INSTALL_DIR/deploy.sh"
+  if [ -f "$INSTALL_DIR/uninstall.sh" ]; then
+    chmod +x "$INSTALL_DIR/uninstall.sh"
+  fi
   "$INSTALL_DIR/deploy.sh"
 }
 
