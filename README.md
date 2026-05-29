@@ -73,7 +73,10 @@ curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install
 - 克隆或更新本项目到 `/opt/esp32-ai-voice-cloud`。
 - 询问 WebSocket 令牌生成方式。
 - 创建 `.env` 配置文件。
+- 检查本机防火墙；如果 `ufw` 或 `firewalld` 正在运行，会自动放行 TCP `8000`。
 - 执行 `docker compose up -d --build` 启动服务。
+
+注意：脚本只能检查 VPS 系统内部防火墙，不能自动修改云平台安全组。阿里云、腾讯云、AWS 等控制台里的安全组仍需要手动放行 TCP `8000`。
 
 ## 部署过程中的令牌选择
 
@@ -160,16 +163,19 @@ Echoed text ...
 
 ## 手动部署方式
 
-如果不想使用一键安装脚本，也可以手动部署：
+如果不想使用一键安装脚本，也可以手动部署。
+
+最快方式是复制下面整段命令：
 
 ```bash
 git clone https://github.com/nvnmvm/esp32-s3-AIchat.git
 cd esp32-s3-AIchat
 cp .env.example .env
+sed -i 's/^WS_TOKEN=.*/WS_TOKEN=请改成你自己的WebSocket令牌/' .env
 docker compose up -d --build
 ```
 
-然后修改 `.env`：
+如果不想用 `sed`，也可以手动编辑 `.env`：
 
 ```env
 SERVER_PORT=8000
@@ -177,6 +183,19 @@ WS_TOKEN=你的WebSocket令牌
 ALLOW_EMPTY_TOKEN=false
 AI_API_KEY=后续AI阶段使用
 LOG_LEVEL=INFO
+```
+
+手动部署后检查服务：
+
+```bash
+docker compose ps
+curl -fsS http://127.0.0.1:8000/health
+```
+
+如果服务器启用了本机防火墙，请手动放行端口：
+
+```bash
+sudo ufw allow 8000/tcp
 ```
 
 ## 常见问题
