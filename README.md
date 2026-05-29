@@ -161,11 +161,41 @@ Received text ...
 Echoed text ...
 ```
 
+## 一键卸载
+
+如果以后想从 VPS 上移除本项目，可以复制下面一整行执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/uninstall.sh -o uninstall.sh && sudo bash uninstall.sh
+```
+
+默认卸载内容：
+
+- 停止并删除本项目的 Docker 容器。
+- 删除 `/opt/esp32-ai-voice-cloud` 项目目录。
+- 保留 Docker 本身，避免影响同一台 VPS 上的其他 Docker 服务。
+
+如果确认这台 VPS 不再需要 Docker，可以使用：
+
+```bash
+sudo bash uninstall.sh --remove-docker
+```
+
+如果想同时删除本项目本地构建出来的 Docker 镜像，可以使用：
+
+```bash
+sudo bash uninstall.sh --remove-images
+```
+
 ## 手动部署方式
 
 如果不想使用一键安装脚本，也可以手动部署。
 
-最快方式是复制下面整段命令：
+### 方法一：使用 git clone
+
+适合服务器已经安装 `git`，并且希望以后用 `git pull` 更新项目的用户。
+
+复制下面整段命令：
 
 ```bash
 git clone https://github.com/nvnmvm/esp32-s3-AIchat.git
@@ -174,6 +204,57 @@ cp .env.example .env
 sed -i 's/^WS_TOKEN=.*/WS_TOKEN=请改成你自己的WebSocket令牌/' .env
 docker compose up -d --build
 ```
+
+### 方法二：下载 GitHub Release 源码包
+
+适合不想在服务器上使用 `git`，只想下载一个固定版本压缩包后手动配置的用户。
+
+1. 打开 Release 页面：
+
+```text
+https://github.com/nvnmvm/esp32-s3-AIchat/releases
+```
+
+2. 进入 `v1.0.0-phase1`，下载 `Source code (zip)` 或 `Source code (tar.gz)`。
+
+3. 把压缩包上传到 VPS，例如：
+
+```bash
+scp esp32-s3-AIchat-*.zip root@你的VPS公网IP:/root/
+```
+
+4. 在 VPS 上解压并进入项目目录。
+
+如果下载的是 zip：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y unzip docker.io docker-compose-plugin
+unzip esp32-s3-AIchat-*.zip
+cd esp32-s3-AIchat-*
+```
+
+如果下载的是 tar.gz：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-plugin
+tar -xzf esp32-s3-AIchat-*.tar.gz
+cd esp32-s3-AIchat-*
+```
+
+5. 创建 `.env` 并启动服务：
+
+```bash
+cp .env.example .env
+sed -i 's/^WS_TOKEN=.*/WS_TOKEN=请改成你自己的WebSocket令牌/' .env
+sudo ufw allow 8000/tcp || true
+docker compose up -d --build
+docker compose ps
+curl -fsS http://127.0.0.1:8000/health
+```
+
+如果使用云服务器，还要在云平台安全组里手动放行 TCP `8000`。
 
 如果不想用 `sed`，也可以手动编辑 `.env`：
 
