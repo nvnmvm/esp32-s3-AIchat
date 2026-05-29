@@ -34,6 +34,14 @@ def test_websocket_echoes_text_with_valid_token(monkeypatch):
         assert websocket.receive_text() == "hello"
 
 
+def test_websocket_echoes_binary_with_valid_token(monkeypatch):
+    monkeypatch.setattr("app.main.WS_TOKEN", "test-token")
+
+    with client.websocket_connect("/ws?token=test-token&device_id=test-device") as websocket:
+        websocket.send_bytes(b"\x01\x02\x03")
+        assert websocket.receive_bytes() == b"\x01\x02\x03"
+
+
 def test_websocket_closes_oversized_text(monkeypatch):
     monkeypatch.setattr("app.main.WS_TOKEN", "test-token")
     monkeypatch.setattr("app.main.MAX_WS_MESSAGE_BYTES", 4)
