@@ -1,0 +1,11 @@
+.git
+.github
+.pytest_cache
+__pycache__
+*.pyc
+.env
+.venv
+tests
+README.md
+SECURITY.md
+publish-to-github.ps1
