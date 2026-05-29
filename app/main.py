@@ -67,6 +67,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             message = await websocket.receive()
+            if message.get("type") == "websocket.disconnect":
+                logger.info("ESP32 disconnected peer=%s device_id=%s", peer, device_id)
+                break
 
             if "text" in message and message["text"] is not None:
                 text = message["text"]
