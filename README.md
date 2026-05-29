@@ -31,30 +31,35 @@ https://github.com/nvnmvm/esp32-s3-AIchat-firmware.git
 
 适用于 Debian 系统的 VPS。
 
+复制下面一整行执行：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-debian.sh -o install-debian.sh
-sudo bash install-debian.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-debian.sh -o install-debian.sh && sudo bash install-debian.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
 ```
 
 ## Ubuntu VPS 一键部署
 
 适用于 Ubuntu 系统的 VPS。
 
+复制下面一整行执行：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
-sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh && sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
 ```
 
 ## 自动识别系统的旧入口
 
 如果你不确定 VPS 是 Debian 还是 Ubuntu，也可以使用自动识别脚本：
 
+复制下面一整行执行：
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh
-sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh && sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
 ```
 
 这个入口会读取 `/etc/os-release`，然后自动调用 Debian 或 Ubuntu 安装脚本。
+
+注意：不要把 `curl ... -o install.sh` 和 `sudo bash install.sh ...` 直接用空格拼在一起；如果不用上面的一行命令，就必须分两次执行。
 
 ## 安装脚本会做什么
 
