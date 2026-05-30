@@ -1,10 +1,12 @@
 import asyncio
 import json
 import logging
+from logging.handlers import TimedRotatingFileHandler
 import math
 import os
 import secrets
 import struct
+import time
 import urllib.error
 import urllib.request
 import wave
@@ -17,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v2.1.1-phase2-complete")
+APP_VERSION = os.getenv("APP_VERSION", "v2.1.2-phase2-complete")
 APP_PHASE = "voice-screen-loopback"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
@@ -29,14 +31,12 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "phase2").lower()
 ASR_PROVIDER = os.getenv("ASR_PROVIDER", "phase2").lower()
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "tone").lower()
 LOG_PAYLOADS = os.getenv("LOG_PAYLOADS", "false").lower() == "true"
+LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").lower() == "true"
+LOG_DIR = Path(os.getenv("LOG_DIR", "runtime/logs"))
 CONVERSATION_DIR = Path(os.getenv("CONVERSATION_DIR", "runtime/conversations"))
 SAVE_DEBUG_WAV = os.getenv("SAVE_DEBUG_WAV", "false").lower() == "true"
 DEBUG_AUDIO_DIR = Path(os.getenv("DEBUG_AUDIO_DIR", "runtime/audio"))
 
-logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO").upper(),
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
 logger = logging.getLogger(APP_NAME)
 
 app = FastAPI(title=APP_NAME)
@@ -68,6 +68,45 @@ VAD_SILENCE_CHUNKS = env_int("VAD_SILENCE_CHUNKS", 12)
 MOCK_TTS_DURATION_MS = env_int("MOCK_TTS_DURATION_MS", 900)
 MOCK_TTS_TONE_HZ = env_int("MOCK_TTS_TONE_HZ", 660)
 LLM_TIMEOUT_SECONDS = env_int("LLM_TIMEOUT_SECONDS", 30)
+LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 7)
+
+
+def configure_logging() -> None:
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_format = logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+
+    if not root_logger.handlers:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(log_format)
+        root_logger.addHandler(console_handler)
+
+    if not LOG_TO_FILE:
+        return
+
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    cutoff = time.time() - (LOG_RETENTION_DAYS * 86400)
+    for path in LOG_DIR.glob("*.log*"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            root_logger.warning("Failed to remove old log file path=%s", path, exc_info=True)
+
+    file_handler = TimedRotatingFileHandler(
+        LOG_DIR / "cloud.log",
+        when="midnight",
+        interval=1,
+        backupCount=LOG_RETENTION_DAYS,
+        encoding="utf-8",
+        utc=False,
+    )
+    file_handler.setFormatter(log_format)
+    root_logger.addHandler(file_handler)
+
+
+configure_logging()
 
 
 @dataclass
@@ -402,6 +441,9 @@ async def health() -> JSONResponse:
             "conversation_storage": "per-turn-file-auto-delete",
             "save_debug_wav": SAVE_DEBUG_WAV,
             "debug_audio_dir": str(DEBUG_AUDIO_DIR),
+            "log_to_file": LOG_TO_FILE,
+            "log_dir": str(LOG_DIR),
+            "log_retention_days": LOG_RETENTION_DAYS,
         }
     )
 

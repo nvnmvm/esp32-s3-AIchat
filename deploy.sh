@@ -172,7 +172,7 @@ print_version_summary() {
   fi
 
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v2.1.1-phase2-complete"
+  echo "Configured APP_VERSION: v2.1.2-phase2-complete"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -204,6 +204,9 @@ ALLOW_EMPTY_TOKEN=false
 AI_API_KEY=$ai_api_key
 LOG_LEVEL=INFO
 LOG_PAYLOADS=false
+LOG_TO_FILE=true
+LOG_RETENTION_DAYS=7
+LOG_DIR=runtime/logs
 MAX_WS_MESSAGE_BYTES=1048576
 MAX_RECORDING_BYTES=384000
 AUDIO_SAMPLE_RATE=16000
@@ -224,7 +227,7 @@ LLM_TIMEOUT_SECONDS=30
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.1-phase2-complete
+APP_VERSION=v2.1.2-phase2-complete
 EOF
 
   cd "$PROJECT_DIR"

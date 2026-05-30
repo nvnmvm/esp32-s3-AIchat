@@ -75,7 +75,7 @@ LLM_TIMEOUT_SECONDS=30
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.1-phase2-complete
+APP_VERSION=v2.1.2-phase2-complete
 ```
 
 ## 快捷管理界面
@@ -95,7 +95,9 @@ sudo bash manage.sh
 - 一键更新：保留数据更新或不保留运行数据更新。
 - 卸载 WebSocket 服务。
 
-`v2.1.1-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新。其他旧版本或未知版本会在更新菜单中提示先备份，或选择不保留运行数据更新。
+`v2.1.2-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新。其他旧版本或未知版本会在更新菜单中提示先备份，或选择不保留运行数据更新。
+
+日志菜单是二级菜单，包含日志保留时间、实时日志、关闭日志、开启日志。日志保留时间是三级菜单，可选保留 7 天、3 天或 1 天；默认保留 7 天，超过保留时间的 `runtime/logs` 文件会自动删除。
 
 ## 验收标准
 
@@ -110,5 +112,5 @@ sudo bash manage.sh
 
 ## 发布版本
 
-- 云端 tag/release：`v2.1.1-phase2-complete`
+- 云端 tag/release：`v2.1.2-phase2-complete`
 - 配套固件 tag/release：`v2.1.0-phase2-complete`

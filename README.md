@@ -1,6 +1,6 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v2.1.1-phase2-complete`，阶段二完善版云端脚本修正版。
+当前版本：`v2.1.2-phase2-complete`，阶段二完善版云端日志菜单修正版。
 
 本仓库是 VPS 云端服务。阶段二接收 ESP32-S3 上传的 PCM 音频，返回识别文本、回答文本和可播放 PCM 音频，用于验证 OLED 显示和 MAX98357A 播放闭环。
 
@@ -66,7 +66,9 @@ cd /opt/esp32-ai-voice-cloud
 sudo bash manage.sh
 ```
 
-菜单支持查看配置、随机或手动修改 WebSocket 令牌、修改 WebSocket 端口、修改 AI API Key、查看状态、实时日志、停止/启动/重启 WebSocket 服务、卸载服务、一键更新。更新分为“保留数据更新”和“不保留运行数据更新”；当前 `v2.1.1-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新，其他跨度会在菜单中提示先备份或改用不保留运行数据更新。
+菜单支持查看配置、随机或手动修改 WebSocket 令牌、修改 WebSocket 端口、修改 AI API Key、查看状态、日志二级菜单、停止/启动/重启 WebSocket 服务、卸载服务、一键更新。更新分为“保留数据更新”和“不保留运行数据更新”；当前 `v2.1.2-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新，其他跨度会在菜单中提示先备份或改用不保留运行数据更新。
+
+日志二级菜单包含：日志保留时间、实时日志、关闭日志、开启日志。日志保留时间里可以选择保留 7 天、3 天或 1 天；默认保留 7 天，旧日志会自动清理，避免长期占用 VPS 空间。
 
 ## 阶段二 WebSocket 协议
 
@@ -117,6 +119,9 @@ ALLOW_EMPTY_TOKEN=false
 AI_API_KEY=
 LOG_LEVEL=INFO
 LOG_PAYLOADS=false
+LOG_TO_FILE=true
+LOG_RETENTION_DAYS=7
+LOG_DIR=runtime/logs
 MAX_WS_MESSAGE_BYTES=1048576
 MAX_RECORDING_BYTES=384000
 AUDIO_SAMPLE_RATE=16000
@@ -137,14 +142,14 @@ LLM_TIMEOUT_SECONDS=30
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.1-phase2-complete
+APP_VERSION=v2.1.2-phase2-complete
 ```
 
 阶段二会把本轮语音解析文本写入 `CONVERSATION_DIR` 下的临时文本文件，回复逻辑读取该文件后立即删除，不保留历史上下文。`SAVE_DEBUG_WAV=true` 时会把每轮录音保存到 `DEBUG_AUDIO_DIR`，用于排查麦克风/I2S 问题。默认 ASR/TTS 是阶段二测试实现；`LLM_PROVIDER=deepseek` 且配置 `DEEPSEEK_API_KEY` 后会调用 DeepSeek 普通非流式接口。
 
 ## 配套固件
 
-请使用配套固件版本：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.0-phase2-complete)。本次 `v2.1.1` 只修改云端脚本输出，不需要更新固件代码。
+请使用配套固件版本：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.0-phase2-complete)。本次 `v2.1.2` 只修改云端脚本和日志管理，不需要更新固件代码。
 
 ## 本地测试
 
