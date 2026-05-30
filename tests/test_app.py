@@ -1,9 +1,11 @@
+import asyncio
 import json
+import logging
 import struct
 
 from fastapi.testclient import TestClient
 
-from app.main import app
+from app.main import VoiceSession, app, handle_binary_message
 
 
 client = TestClient(app)
@@ -93,6 +95,20 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
         assert "本轮文本文件已在回复后自动清理" in answer_text
         assert list((tmp_path / "conversations").glob("*.txt")) == []
         assert len(list((tmp_path / "audio").glob("*.wav"))) == 1
+
+
+def test_stray_audio_after_recording_is_ignored(caplog):
+    caplog.set_level(logging.INFO, logger="esp32-ai-voice-cloud")
+    session = VoiceSession()
+
+    class FakeWebSocket:
+        async def close(self, code):
+            raise AssertionError(f"WebSocket should not close for stray audio: {code}")
+
+    asyncio.run(handle_binary_message(FakeWebSocket(), session, "test-device", b"1234"))
+
+    assert session.pcm == bytearray()
+    assert "Ignored stray audio bytes=4 device_id=test-device because session is not recording" in caplog.text
 
 
 def test_websocket_closes_oversized_binary(monkeypatch):

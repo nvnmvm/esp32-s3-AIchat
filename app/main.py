@@ -19,7 +19,7 @@ from fastapi.responses import JSONResponse
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v2.1.2-phase2-complete")
+APP_VERSION = os.getenv("APP_VERSION", "v2.1.3-phase2-stable")
 APP_PHASE = "voice-screen-loopback"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
@@ -397,7 +397,11 @@ async def handle_binary_message(websocket: WebSocket, session: VoiceSession, dev
         return
 
     if not session.recording:
-        await send_json(websocket, "error", text="收到音频，但当前没有 start_record。")
+        logger.info(
+            "Ignored stray audio bytes=%d device_id=%s because session is not recording",
+            len(data),
+            device_id,
+        )
         return
 
     if len(session.pcm) + len(data) > MAX_RECORDING_BYTES:
