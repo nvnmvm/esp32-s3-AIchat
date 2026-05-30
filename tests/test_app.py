@@ -24,6 +24,7 @@ def test_health_reports_phase2_state():
     assert data["token_required"] is True
     assert data["audio"]["sample_rate"] == 16000
     assert data["tts_mode"] == "local-test-tone"
+    assert data["conversation_storage"] == "per-turn-file-auto-delete"
 
 
 def test_websocket_rejects_missing_token():
@@ -46,11 +47,12 @@ def test_websocket_accepts_phase2_ping(monkeypatch):
         assert pong["state"] == "idle"
 
 
-def test_websocket_voice_turn_returns_text_and_audio(monkeypatch):
+def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
     monkeypatch.setattr("app.main.WS_TOKEN", "test-token")
     monkeypatch.setattr("app.main.VAD_MIN_RECORDING_BYTES", 256)
     monkeypatch.setattr("app.main.VAD_SILENCE_CHUNKS", 2)
     monkeypatch.setattr("app.main.MOCK_TTS_DURATION_MS", 50)
+    monkeypatch.setattr("app.main.CONVERSATION_DIR", tmp_path)
 
     speech = b"".join(struct.pack("<h", 3000) for _ in range(160))
     silence = b"".join(struct.pack("<h", 0) for _ in range(160))
@@ -66,11 +68,14 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch):
 
         seen_types = []
         got_audio = False
+        answer_text = ""
         for _ in range(20):
             message = websocket.receive()
             if "text" in message:
                 payload = json.loads(message["text"])
                 seen_types.append(payload["type"])
+                if payload["type"] == "answer_text":
+                    answer_text = payload["text"]
                 if payload["type"] == "audio_end":
                     break
             elif "bytes" in message:
@@ -81,6 +86,8 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch):
         assert "audio_start" in seen_types
         assert "audio_end" in seen_types
         assert got_audio is True
+        assert "本轮文本文件已在回复后自动清理" in answer_text
+        assert list(tmp_path.glob("*.txt")) == []
 
 
 def test_websocket_closes_oversized_binary(monkeypatch):

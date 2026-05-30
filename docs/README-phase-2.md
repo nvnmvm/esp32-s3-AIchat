@@ -12,6 +12,8 @@
   - `stop`
 - 接收 16 kHz、16 bit、mono、PCM little-endian 音频块。
 - 用轻量 RMS/VAD 判断录音结束。
+- 将本轮语音解析文本写入 `runtime/conversations` 临时文本文件。
+- 回复逻辑读取本轮文本文件后自动删除，不保留历史上下文。
 - 返回 JSON 状态消息：
   - `status`
   - `asr_text`
@@ -21,7 +23,7 @@
   - `error`
 - 返回可由 ESP32-S3 直接播放的 PCM 测试音频。
 
-当前版本重点是闭环验证。正式 ASR、DeepSeek 和 TTS 的生产级接入会在后续阶段继续增强；阶段二保留 `AI_API_KEY` 和协议字段，便于后续替换实现。
+当前版本重点是闭环验证。阶段二测试解析不消耗大模型 token；正式 ASR、DeepSeek 和 TTS 的生产级接入会在后续阶段继续增强。
 
 ## VPS 阶段二测试部署
 
@@ -60,7 +62,8 @@ AUDIO_SAMPLE_WIDTH_BYTES=2
 VAD_MIN_RECORDING_BYTES=32000
 VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
-APP_VERSION=v2.0.0-phase2
+CONVERSATION_DIR=runtime/conversations
+APP_VERSION=v2.0.1-phase2
 ```
 
 ## 验收标准
@@ -69,10 +72,11 @@ APP_VERSION=v2.0.0-phase2
 - ESP32-S3 连接后收到 `status` JSON。
 - ESP32-S3 发送 `start_record` 后，云端进入录音状态。
 - 云端收到 PCM 音频后返回 `asr_text` 和 `answer_text`。
+- 本轮语音解析文本文件在回复完成后自动删除。
 - 云端返回 `audio_start`、二进制 PCM 音频、`audio_end`。
 - ESP32-S3 OLED 显示回答文本，MAX98357A 播放测试音频。
 
 ## 发布版本
 
-- 云端 tag/release：`v2.0.0-phase2`
-- 配套固件 tag/release：`v2.0.0-phase2`
+- 云端 tag/release：`v2.0.1-phase2`
+- 配套固件 tag/release：`v2.0.2-phase2`

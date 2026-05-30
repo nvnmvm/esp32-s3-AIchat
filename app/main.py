@@ -5,6 +5,7 @@ import os
 import secrets
 import struct
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
@@ -12,12 +13,13 @@ from fastapi.responses import JSONResponse
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v2.0.0-phase2")
+APP_VERSION = os.getenv("APP_VERSION", "v2.0.1-phase2")
 APP_PHASE = "voice-screen-loopback"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 LOG_PAYLOADS = os.getenv("LOG_PAYLOADS", "false").lower() == "true"
+CONVERSATION_DIR = Path(os.getenv("CONVERSATION_DIR", "runtime/conversations"))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -61,11 +63,22 @@ class VoiceSession:
     pcm: bytearray = field(default_factory=bytearray)
     silence_chunks: int = 0
     turn_id: int = 0
+    transcript_path: Optional[Path] = None
 
     def reset_recording(self) -> None:
         self.recording = False
         self.pcm.clear()
         self.silence_chunks = 0
+
+    def clear_transcript(self) -> None:
+        if self.transcript_path is None:
+            return
+        try:
+            self.transcript_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Failed to remove transcript file path=%s", self.transcript_path, exc_info=True)
+        finally:
+            self.transcript_path = None
 
 
 def client_name(websocket: WebSocket) -> str:
@@ -130,13 +143,50 @@ def make_tone_pcm(duration_ms: Optional[int] = None, frequency_hz: Optional[int]
     return bytes(frames)
 
 
-def build_phase2_answer(duration_s: float, rms: float) -> tuple[str, str]:
-    asr_text = f"阶段二测试音频已收到，时长约 {duration_s:.1f} 秒，音量 RMS {rms:.0f}。"
-    answer_text = "阶段二闭环已完成：云端收到语音，屏幕显示本回答，并返回测试音频给 MAX98357A 播放。"
-    return asr_text, answer_text
+def transcribe_phase2_audio(duration_s: float, rms: float, byte_count: int) -> str:
+    if rms < VAD_SILENCE_RMS:
+        return (
+            f"阶段二收到一段音频，时长约 {duration_s:.1f} 秒，"
+            f"但音量偏低，RMS {rms:.0f}。请检查麦克风接线、增益和供电。"
+        )
+
+    return (
+        f"阶段二收到一段测试语音，时长约 {duration_s:.1f} 秒，"
+        f"音量 RMS {rms:.0f}，PCM 字节数 {byte_count}。"
+    )
 
 
-async def finish_recording(websocket: WebSocket, session: VoiceSession, reason: str) -> None:
+def transcript_file_path(device_id: str, turn_id: int) -> Path:
+    safe_device_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in device_id)[:48]
+    return CONVERSATION_DIR / f"{safe_device_id or 'device'}-turn-{turn_id}.txt"
+
+
+def write_transcript_file(device_id: str, turn_id: int, text: str) -> Path:
+    CONVERSATION_DIR.mkdir(parents=True, exist_ok=True)
+    path = transcript_file_path(device_id, turn_id)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def build_phase2_answer_from_file(path: Path) -> str:
+    transcript = path.read_text(encoding="utf-8").strip()
+    if not transcript:
+        return "阶段二云端没有读取到有效识别文本，请重新唤醒后再说一遍。"
+
+    return (
+        "阶段二闭环已完成：云端已读取本轮语音转文字文件，"
+        "OLED 应显示本回答；本轮文本文件已在回复后自动清理。"
+    )
+
+
+def build_phase2_turn(device_id: str, turn_id: int, duration_s: float, rms: float, byte_count: int) -> tuple[str, str, Path]:
+    asr_text = transcribe_phase2_audio(duration_s, rms, byte_count)
+    transcript_path = write_transcript_file(device_id, turn_id, asr_text)
+    answer_text = build_phase2_answer_from_file(transcript_path)
+    return asr_text, answer_text, transcript_path
+
+
+async def finish_recording(websocket: WebSocket, session: VoiceSession, device_id: str, reason: str) -> None:
     if not session.pcm:
         await send_json(websocket, "error", text="没有收到有效 PCM 音频。")
         session.reset_recording()
@@ -147,8 +197,6 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, reason: 
 
     duration_s = len(pcm) / float(AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * AUDIO_CHANNELS)
     rms = pcm16_rms(pcm)
-    asr_text, answer_text = build_phase2_answer(duration_s, rms)
-    audio = make_tone_pcm()
 
     logger.info(
         "Processed phase2 audio turn=%d bytes=%d duration_s=%.2f rms=%.1f reason=%s",
@@ -159,24 +207,39 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, reason: 
         reason,
     )
 
-    await send_json(websocket, "status", text="识别中...", state="asr")
-    await send_json(websocket, "asr_text", text=asr_text)
-    await send_json(websocket, "status", text="思考中...", state="thinking")
-    await send_json(websocket, "answer_text", text=answer_text)
-    await send_json(websocket, "audio_start", sample_rate=AUDIO_SAMPLE_RATE, format="pcm_s16le")
+    try:
+        await send_json(websocket, "status", text="识别中...", state="asr", turn_id=session.turn_id)
+        asr_text, answer_text, session.transcript_path = build_phase2_turn(
+            device_id=device_id,
+            turn_id=session.turn_id,
+            duration_s=duration_s,
+            rms=rms,
+            byte_count=len(pcm),
+        )
+        await send_json(websocket, "asr_text", text=asr_text, turn_id=session.turn_id)
+        await send_json(websocket, "status", text="思考中...", state="thinking", turn_id=session.turn_id)
+        await send_json(websocket, "answer_text", text=answer_text, turn_id=session.turn_id)
+        await send_json(websocket, "audio_start", sample_rate=AUDIO_SAMPLE_RATE, format="pcm_s16le")
 
-    chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES // 10
-    for start in range(0, len(audio), chunk_size):
-        await websocket.send_bytes(audio[start:start + chunk_size])
+        audio = make_tone_pcm()
+        chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES // 10
+        for start in range(0, len(audio), chunk_size):
+            await websocket.send_bytes(audio[start:start + chunk_size])
 
-    await send_json(websocket, "audio_end")
-    await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
+        await send_json(websocket, "audio_end")
+        await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
+    except Exception:
+        logger.exception("Failed to process phase2 turn=%d device_id=%s", session.turn_id, device_id)
+        await send_json(websocket, "error", text="云端处理本轮语音失败，请查看 VPS 日志。")
+    finally:
+        session.clear_transcript()
 
 
-async def handle_json_message(websocket: WebSocket, session: VoiceSession, payload: dict[str, Any]) -> None:
+async def handle_json_message(websocket: WebSocket, session: VoiceSession, device_id: str, payload: dict[str, Any]) -> None:
     message_type = str(payload.get("type", "")).strip().lower()
 
     if message_type == "start_record":
+        session.clear_transcript()
         session.turn_id += 1
         session.reset_recording()
         session.recording = True
@@ -184,15 +247,17 @@ async def handle_json_message(websocket: WebSocket, session: VoiceSession, paylo
         return
 
     if message_type in {"finish_record", "vad_end"}:
-        await finish_recording(websocket, session, message_type)
+        await finish_recording(websocket, session, device_id, message_type)
         return
 
     if message_type == "cancel":
+        session.clear_transcript()
         session.reset_recording()
         await send_json(websocket, "status", text="已取消，等待唤醒", state="idle")
         return
 
     if message_type == "stop":
+        session.clear_transcript()
         session.reset_recording()
         await send_json(websocket, "status", text="已结束对话", state="idle")
         return
@@ -204,7 +269,7 @@ async def handle_json_message(websocket: WebSocket, session: VoiceSession, paylo
     await send_json(websocket, "error", text=f"未知消息类型: {message_type or '<empty>'}")
 
 
-async def handle_binary_message(websocket: WebSocket, session: VoiceSession, data: bytes) -> None:
+async def handle_binary_message(websocket: WebSocket, session: VoiceSession, device_id: str, data: bytes) -> None:
     if len(data) > MAX_WS_MESSAGE_BYTES:
         await websocket.close(code=status.WS_1009_MESSAGE_TOO_BIG)
         return
@@ -214,7 +279,7 @@ async def handle_binary_message(websocket: WebSocket, session: VoiceSession, dat
         return
 
     if len(session.pcm) + len(data) > MAX_RECORDING_BYTES:
-        await finish_recording(websocket, session, "max_recording_bytes")
+        await finish_recording(websocket, session, device_id, "max_recording_bytes")
         return
 
     session.pcm.extend(data)
@@ -225,7 +290,7 @@ async def handle_binary_message(websocket: WebSocket, session: VoiceSession, dat
         session.silence_chunks = 0
 
     if session.silence_chunks >= VAD_SILENCE_CHUNKS:
-        await finish_recording(websocket, session, "vad_silence")
+        await finish_recording(websocket, session, device_id, "vad_silence")
 
 
 @app.get("/health")
@@ -247,6 +312,8 @@ async def health() -> JSONResponse:
             },
             "ai_api_key_configured": bool(AI_API_KEY),
             "tts_mode": "local-test-tone",
+            "conversation_dir": str(CONVERSATION_DIR),
+            "conversation_storage": "per-turn-file-auto-delete",
         }
     )
 
@@ -297,10 +364,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                     await send_json(websocket, "error", text="JSON 消息必须是对象。")
                     continue
 
-                await handle_json_message(websocket, session, payload)
+                await handle_json_message(websocket, session, device_id, payload)
 
             elif "bytes" in message and message["bytes"] is not None:
-                await handle_binary_message(websocket, session, message["bytes"])
+                await handle_binary_message(websocket, session, device_id, message["bytes"])
 
     except WebSocketDisconnect:
         logger.info("ESP32 disconnected peer=%s device_id=%s", peer, device_id)
+    finally:
+        session.clear_transcript()

@@ -1,8 +1,8 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v2.0.0-phase2`，阶段二语音和屏幕双输出闭环版。
+当前版本：`v2.0.1-phase2`，阶段二语音和屏幕双输出闭环版云端修正版。
 
-本仓库是 VPS 云端服务。阶段二接收 ESP32-S3 上传的 PCM 音频，返回回答文本和可播放 PCM 音频，用于验证 OLED 显示和 MAX98357A 播放闭环。
+本仓库是 VPS 云端服务。阶段二接收 ESP32-S3 上传的 PCM 音频，返回识别文本、回答文本和可播放 PCM 音频，用于验证 OLED 显示和 MAX98357A 播放闭环。
 
 ## 配套仓库
 
@@ -115,10 +115,11 @@ VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
-APP_VERSION=v2.0.0-phase2
+CONVERSATION_DIR=runtime/conversations
+APP_VERSION=v2.0.1-phase2
 ```
 
-当前阶段二返回本地测试 PCM 提示音，用来验证 MAX98357A 播放链路。正式 ASR、DeepSeek、TTS 接入保留到后续阶段继续替换增强。
+阶段二会把本轮语音解析文本写入 `CONVERSATION_DIR` 下的临时文本文件，回复逻辑读取该文件后立即删除，不保留历史上下文。当前 ASR 是阶段二测试解析，不接入大模型 token；正式 ASR、DeepSeek、TTS 接入保留到后续阶段继续替换增强。
 
 ## 本地测试
 
