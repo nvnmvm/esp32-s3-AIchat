@@ -175,7 +175,16 @@ AI_API_KEY=$ai_api_key
 LOG_LEVEL=INFO
 LOG_PAYLOADS=false
 MAX_WS_MESSAGE_BYTES=1048576
-APP_VERSION=v1.0.0-phase1
+MAX_RECORDING_BYTES=384000
+AUDIO_SAMPLE_RATE=16000
+AUDIO_CHANNELS=1
+AUDIO_SAMPLE_WIDTH_BYTES=2
+VAD_MIN_RECORDING_BYTES=32000
+VAD_SILENCE_RMS=450
+VAD_SILENCE_CHUNKS=12
+MOCK_TTS_DURATION_MS=900
+MOCK_TTS_TONE_HZ=660
+APP_VERSION=v2.0.0-phase2
 EOF
 
   cd "$PROJECT_DIR"
@@ -194,6 +203,7 @@ EOF
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
+  echo "Phase 2 audio format: PCM s16le, 16000 Hz, mono"
   echo
   echo "=== VPS common commands ==="
   echo "Cloud config file: $ENV_FILE"

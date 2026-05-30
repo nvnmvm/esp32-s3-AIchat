@@ -4,16 +4,19 @@ set -euo pipefail
 EXPECTED_OS="debian"
 INSTALL_DIR="/opt/esp32-ai-voice-cloud"
 REPO_URL=""
+CLEAN_INSTALL=false
 
 usage() {
   cat <<'EOF'
 Usage:
   sudo bash install-debian.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git
+  sudo bash install-debian.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
   sudo bash install-debian.sh --dir /opt/esp32-ai-voice-cloud
 
 Options:
   --repo URL    Git repository to clone or update before deployment.
   --dir PATH    Install directory. Default: /opt/esp32-ai-voice-cloud
+  --clean       Stop and remove the existing install directory before cloning.
   -h, --help    Show this help.
 EOF
 }
@@ -27,6 +30,10 @@ while [ $# -gt 0 ]; do
     --dir)
       INSTALL_DIR="${2:-}"
       shift 2
+      ;;
+    --clean)
+      CLEAN_INSTALL=true
+      shift
       ;;
     -h|--help)
       usage
@@ -142,6 +149,13 @@ fetch_project() {
       echo "Repository URL is required when this script is not run inside the project directory." >&2
       exit 1
     fi
+  fi
+
+  if [ "$CLEAN_INSTALL" = true ] && [ -d "$INSTALL_DIR" ]; then
+    if [ -f "$INSTALL_DIR/docker-compose.yml" ] && command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+      (cd "$INSTALL_DIR" && docker compose down --remove-orphans) || true
+    fi
+    rm -rf -- "$INSTALL_DIR"
   fi
 
   if [ -d "$INSTALL_DIR/.git" ]; then
