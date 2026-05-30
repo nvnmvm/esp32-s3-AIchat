@@ -1,6 +1,6 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v2.0.1-phase2`，阶段二语音和屏幕双输出闭环版云端修正版。
+当前版本：`v2.1.0-phase2-complete`，阶段二完善版。
 
 本仓库是 VPS 云端服务。阶段二接收 ESP32-S3 上传的 PCM 音频，返回识别文本、回答文本和可播放 PCM 音频，用于验证 OLED 显示和 MAX98357A 播放闭环。
 
@@ -55,6 +55,15 @@ curl -fsS http://127.0.0.1:8000/health
 ```
 
 如果使用云服务器，还需要在云厂商安全组放行实际 TCP 端口，默认是 `8000`。
+
+快捷管理界面调出方法：
+
+```bash
+cd /opt/esp32-ai-voice-cloud
+sudo bash manage.sh
+```
+
+菜单支持查看配置、随机或手动修改 WebSocket 令牌、修改 WebSocket 端口、修改 AI API Key、查看状态、实时日志、停止/启动/重启 WebSocket 服务、卸载服务、一键更新。更新分为“保留数据更新”和“不保留运行数据更新”；当前 `v2.1.0-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新，其他跨度会在菜单中提示先备份或改用不保留运行数据更新。
 
 ## 阶段二 WebSocket 协议
 
@@ -115,11 +124,24 @@ VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
+ASR_PROVIDER=phase2
+LLM_PROVIDER=phase2
+TTS_PROVIDER=tone
+DEEPSEEK_API_KEY=
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+LLM_TIMEOUT_SECONDS=30
+SAVE_DEBUG_WAV=false
+DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.0.1-phase2
+APP_VERSION=v2.1.0-phase2-complete
 ```
 
-阶段二会把本轮语音解析文本写入 `CONVERSATION_DIR` 下的临时文本文件，回复逻辑读取该文件后立即删除，不保留历史上下文。当前 ASR 是阶段二测试解析，不接入大模型 token；正式 ASR、DeepSeek、TTS 接入保留到后续阶段继续替换增强。
+阶段二会把本轮语音解析文本写入 `CONVERSATION_DIR` 下的临时文本文件，回复逻辑读取该文件后立即删除，不保留历史上下文。`SAVE_DEBUG_WAV=true` 时会把每轮录音保存到 `DEBUG_AUDIO_DIR`，用于排查麦克风/I2S 问题。默认 ASR/TTS 是阶段二测试实现；`LLM_PROVIDER=deepseek` 且配置 `DEEPSEEK_API_KEY` 后会调用 DeepSeek 普通非流式接口。
+
+## 配套固件
+
+请使用固件仓库同名版本：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.0-phase2-complete)。
 
 ## 本地测试
 

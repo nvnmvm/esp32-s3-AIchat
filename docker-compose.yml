@@ -5,6 +5,8 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    volumes:
+      - ./runtime:/app/runtime
     ports:
       - "${SERVER_PORT:-8000}:8000"
     healthcheck:

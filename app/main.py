@@ -1,9 +1,13 @@
+import asyncio
 import json
 import logging
 import math
 import os
 import secrets
 import struct
+import urllib.error
+import urllib.request
+import wave
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -13,13 +17,21 @@ from fastapi.responses import JSONResponse
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v2.0.1-phase2")
+APP_VERSION = os.getenv("APP_VERSION", "v2.1.0-phase2-complete")
 APP_PHASE = "voice-screen-loopback"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 AI_API_KEY = os.getenv("AI_API_KEY", "")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", AI_API_KEY)
+DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "phase2").lower()
+ASR_PROVIDER = os.getenv("ASR_PROVIDER", "phase2").lower()
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "tone").lower()
 LOG_PAYLOADS = os.getenv("LOG_PAYLOADS", "false").lower() == "true"
 CONVERSATION_DIR = Path(os.getenv("CONVERSATION_DIR", "runtime/conversations"))
+SAVE_DEBUG_WAV = os.getenv("SAVE_DEBUG_WAV", "false").lower() == "true"
+DEBUG_AUDIO_DIR = Path(os.getenv("DEBUG_AUDIO_DIR", "runtime/audio"))
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -55,6 +67,7 @@ VAD_SILENCE_RMS = env_int("VAD_SILENCE_RMS", 450)
 VAD_SILENCE_CHUNKS = env_int("VAD_SILENCE_CHUNKS", 12)
 MOCK_TTS_DURATION_MS = env_int("MOCK_TTS_DURATION_MS", 900)
 MOCK_TTS_TONE_HZ = env_int("MOCK_TTS_TONE_HZ", 660)
+LLM_TIMEOUT_SECONDS = env_int("LLM_TIMEOUT_SECONDS", 30)
 
 
 @dataclass
@@ -143,6 +156,24 @@ def make_tone_pcm(duration_ms: Optional[int] = None, frequency_hz: Optional[int]
     return bytes(frames)
 
 
+def safe_device_slug(device_id: str) -> str:
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in device_id)[:48] or "device"
+
+
+def write_debug_wav(device_id: str, turn_id: int, pcm: bytes) -> Optional[Path]:
+    if not SAVE_DEBUG_WAV:
+        return None
+
+    DEBUG_AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    path = DEBUG_AUDIO_DIR / f"turn-{turn_id}-{safe_device_slug(device_id)}.wav"
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(AUDIO_CHANNELS)
+        wav_file.setsampwidth(AUDIO_SAMPLE_WIDTH_BYTES)
+        wav_file.setframerate(AUDIO_SAMPLE_RATE)
+        wav_file.writeframes(pcm)
+    return path
+
+
 def transcribe_phase2_audio(duration_s: float, rms: float, byte_count: int) -> str:
     if rms < VAD_SILENCE_RMS:
         return (
@@ -157,8 +188,7 @@ def transcribe_phase2_audio(duration_s: float, rms: float, byte_count: int) -> s
 
 
 def transcript_file_path(device_id: str, turn_id: int) -> Path:
-    safe_device_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in device_id)[:48]
-    return CONVERSATION_DIR / f"{safe_device_id or 'device'}-turn-{turn_id}.txt"
+    return CONVERSATION_DIR / f"{safe_device_slug(device_id)}-turn-{turn_id}.txt"
 
 
 def write_transcript_file(device_id: str, turn_id: int, text: str) -> Path:
@@ -179,10 +209,61 @@ def build_phase2_answer_from_file(path: Path) -> str:
     )
 
 
-def build_phase2_turn(device_id: str, turn_id: int, duration_s: float, rms: float, byte_count: int) -> tuple[str, str, Path]:
+def deepseek_chat(user_text: str) -> str:
+    if not DEEPSEEK_API_KEY:
+        raise RuntimeError("DEEPSEEK_API_KEY or AI_API_KEY is not configured.")
+
+    url = DEEPSEEK_API_BASE.rstrip("/") + "/chat/completions"
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": "你是 ESP32-S3 AI 对话机器人阶段二闭环测试助手。回答要简洁、直接、适合显示在小屏幕上。",
+            },
+            {"role": "user", "content": user_text},
+        ],
+        "stream": False,
+        "temperature": 0.7,
+    }
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=LLM_TIMEOUT_SECONDS) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"DeepSeek HTTP {exc.code}: {body[:240]}") from exc
+
+    try:
+        answer = data["choices"][0]["message"]["content"].strip()
+    except (KeyError, IndexError, TypeError) as exc:
+        raise RuntimeError(f"Unexpected DeepSeek response: {data}") from exc
+
+    if not answer:
+        raise RuntimeError("DeepSeek returned an empty answer.")
+    return answer
+
+
+async def build_answer_text(path: Path) -> str:
+    transcript = path.read_text(encoding="utf-8").strip()
+    if LLM_PROVIDER == "deepseek" or (LLM_PROVIDER == "auto" and DEEPSEEK_API_KEY):
+        return await asyncio.to_thread(deepseek_chat, transcript)
+    return build_phase2_answer_from_file(path)
+
+
+async def build_phase2_turn(device_id: str, turn_id: int, duration_s: float, rms: float, byte_count: int) -> tuple[str, str, Path]:
     asr_text = transcribe_phase2_audio(duration_s, rms, byte_count)
     transcript_path = write_transcript_file(device_id, turn_id, asr_text)
-    answer_text = build_phase2_answer_from_file(transcript_path)
+    answer_text = await build_answer_text(transcript_path)
     return asr_text, answer_text, transcript_path
 
 
@@ -197,19 +278,21 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
 
     duration_s = len(pcm) / float(AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * AUDIO_CHANNELS)
     rms = pcm16_rms(pcm)
+    wav_path = write_debug_wav(device_id, session.turn_id, pcm)
 
     logger.info(
-        "Processed phase2 audio turn=%d bytes=%d duration_s=%.2f rms=%.1f reason=%s",
+        "Processed phase2 audio turn=%d bytes=%d duration_s=%.2f rms=%.1f reason=%s wav_path=%s",
         session.turn_id,
         len(pcm),
         duration_s,
         rms,
         reason,
+        wav_path,
     )
 
     try:
         await send_json(websocket, "status", text="识别中...", state="asr", turn_id=session.turn_id)
-        asr_text, answer_text, session.transcript_path = build_phase2_turn(
+        asr_text, answer_text, session.transcript_path = await build_phase2_turn(
             device_id=device_id,
             turn_id=session.turn_id,
             duration_s=duration_s,
@@ -311,9 +394,14 @@ async def health() -> JSONResponse:
                 "format": "pcm_s16le",
             },
             "ai_api_key_configured": bool(AI_API_KEY),
-            "tts_mode": "local-test-tone",
+            "asr_provider": ASR_PROVIDER,
+            "llm_provider": LLM_PROVIDER,
+            "tts_provider": TTS_PROVIDER,
+            "tts_mode": "local-test-tone" if TTS_PROVIDER == "tone" else TTS_PROVIDER,
             "conversation_dir": str(CONVERSATION_DIR),
             "conversation_storage": "per-turn-file-auto-delete",
+            "save_debug_wav": SAVE_DEBUG_WAV,
+            "debug_audio_dir": str(DEBUG_AUDIO_DIR),
         }
     )
 

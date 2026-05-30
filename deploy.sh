@@ -164,6 +164,11 @@ main() {
   token="$(read_token)"
   server_port="$(read_port)"
   ai_api_key="$(read_ai_api_key)"
+  if [ -n "$ai_api_key" ]; then
+    llm_provider="deepseek"
+  else
+    llm_provider="phase2"
+  fi
 
   check_firewall "$server_port"
 
@@ -184,8 +189,17 @@ VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
+ASR_PROVIDER=phase2
+LLM_PROVIDER=$llm_provider
+TTS_PROVIDER=tone
+DEEPSEEK_API_KEY=$ai_api_key
+DEEPSEEK_API_BASE=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-chat
+LLM_TIMEOUT_SECONDS=30
+SAVE_DEBUG_WAV=false
+DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.0.1-phase2
+APP_VERSION=v2.1.0-phase2-complete
 EOF
 
   cd "$PROJECT_DIR"

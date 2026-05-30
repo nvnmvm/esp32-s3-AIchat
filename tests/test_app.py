@@ -25,6 +25,8 @@ def test_health_reports_phase2_state():
     assert data["audio"]["sample_rate"] == 16000
     assert data["tts_mode"] == "local-test-tone"
     assert data["conversation_storage"] == "per-turn-file-auto-delete"
+    assert data["save_debug_wav"] is False
+    assert data["llm_provider"] == "phase2"
 
 
 def test_websocket_rejects_missing_token():
@@ -52,7 +54,9 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
     monkeypatch.setattr("app.main.VAD_MIN_RECORDING_BYTES", 256)
     monkeypatch.setattr("app.main.VAD_SILENCE_CHUNKS", 2)
     monkeypatch.setattr("app.main.MOCK_TTS_DURATION_MS", 50)
-    monkeypatch.setattr("app.main.CONVERSATION_DIR", tmp_path)
+    monkeypatch.setattr("app.main.CONVERSATION_DIR", tmp_path / "conversations")
+    monkeypatch.setattr("app.main.DEBUG_AUDIO_DIR", tmp_path / "audio")
+    monkeypatch.setattr("app.main.SAVE_DEBUG_WAV", True)
 
     speech = b"".join(struct.pack("<h", 3000) for _ in range(160))
     silence = b"".join(struct.pack("<h", 0) for _ in range(160))
@@ -87,7 +91,8 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
         assert "audio_end" in seen_types
         assert got_audio is True
         assert "本轮文本文件已在回复后自动清理" in answer_text
-        assert list(tmp_path.glob("*.txt")) == []
+        assert list((tmp_path / "conversations").glob("*.txt")) == []
+        assert len(list((tmp_path / "audio").glob("*.wav"))) == 1
 
 
 def test_websocket_closes_oversized_binary(monkeypatch):
