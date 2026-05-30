@@ -63,6 +63,8 @@ curl -fsS http://127.0.0.1:8000/health
 docker compose logs -fcurl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
 ```
 
+这样 Docker 会把 `curl` 误读成 `logs -f` 后面的参数，并报出 `unknown shorthand flag: 'c' in -curl`。
+
 正确做法是分开执行：
 
 ```bash

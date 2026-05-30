@@ -43,6 +43,8 @@
 docker compose logs -fcurl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
 ```
 
+这个命令会导致 Docker 报错：`unknown shorthand flag: 'c' in -curl`。
+
 正确示例：
 
 ```bash
