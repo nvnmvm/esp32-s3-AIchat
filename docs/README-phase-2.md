@@ -46,6 +46,16 @@ Ubuntu：
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh && sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
 ```
 
+如果正在看实时日志，先按 `Ctrl+C` 退出：
+
+```bash
+cd /opt/esp32-ai-voice-cloud
+docker compose logs -f
+# 看完日志后按 Ctrl+C，回到命令行提示符，再执行安装/更新命令
+```
+
+不要把 `docker compose logs -f` 和 `curl ... install-ubuntu.sh` 粘在同一行。`docker compose logs -fcurl ...` 会被 Docker 解析成错误参数，并出现 `unknown shorthand flag: 'c' in -curl`。
+
 安装脚本拉取代码后会输出 `Downloaded cloud code version`，部署完成后会输出 `Configured APP_VERSION`、`Git code version` 和 `/health` 实际运行版本，方便确认 VPS 当前运行的云端版本。
 
 ## 云端配置

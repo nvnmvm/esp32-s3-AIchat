@@ -57,6 +57,22 @@ cd /opt/esp32-ai-voice-cloud && docker compose logs -f
 curl -fsS http://127.0.0.1:8000/health
 ```
 
+注意：`docker compose logs -f` 是实时日志命令，会一直占用当前终端。要先按 `Ctrl+C` 退出日志，再执行安装或更新命令。不要把日志命令和安装命令粘在同一行，例如下面这种是错误的：
+
+```bash
+docker compose logs -fcurl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
+```
+
+正确做法是分开执行：
+
+```bash
+cd /opt/esp32-ai-voice-cloud
+docker compose logs -f
+# 看完日志后按 Ctrl+C 退出，再执行下面的更新/安装命令
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
+sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
+```
+
 如果使用云服务器，还需要在云厂商安全组放行实际 TCP 端口，默认是 `8000`。
 
 快捷管理界面调出方法：

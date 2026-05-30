@@ -33,6 +33,26 @@
 - [下载云端 ZIP](https://github.com/nvnmvm/esp32-s3-AIchat/archive/refs/tags/v2.1.2-phase2-complete.zip)
 - [下载云端 TAR.GZ](https://github.com/nvnmvm/esp32-s3-AIchat/archive/refs/tags/v2.1.2-phase2-complete.tar.gz)
 
+## 常见命令错误
+
+`docker compose logs -f` 是实时日志命令，会持续占用当前终端。看完日志后需要按 `Ctrl+C` 退出，再执行安装或更新命令。
+
+错误示例：
+
+```bash
+docker compose logs -fcurl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
+```
+
+正确示例：
+
+```bash
+cd /opt/esp32-ai-voice-cloud
+docker compose logs -f
+# 按 Ctrl+C 退出日志后，再运行：
+curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh
+sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
+```
+
 ## 配套固件
 
 固件无新增代码要求，继续使用：[v2.1.0-phase2-complete](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.0-phase2-complete)
