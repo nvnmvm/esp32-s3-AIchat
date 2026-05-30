@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
-LATEST_VERSION="v2.1.0-phase2-complete"
+LATEST_VERSION="v2.1.1-phase2-complete"
 
 need_env() {
   if [ ! -f "$ENV_FILE" ]; then

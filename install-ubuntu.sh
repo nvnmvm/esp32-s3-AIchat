@@ -166,11 +166,32 @@ fetch_project() {
   fi
 }
 
+print_downloaded_version() {
+  local git_version="unknown"
+  local default_version="unknown"
+
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    git_version="$(git -C "$INSTALL_DIR" describe --tags --always --dirty 2>/dev/null || printf 'unknown')"
+  fi
+
+  if [ -f "$INSTALL_DIR/.env.example" ]; then
+    default_version="$(awk -F= '$1 == "APP_VERSION" { print $2 }' "$INSTALL_DIR/.env.example" | tail -n 1)"
+    default_version="${default_version:-unknown}"
+  fi
+
+  echo
+  echo "=== Downloaded cloud code version ==="
+  echo "Git code version: ${git_version}"
+  echo "Default APP_VERSION: ${default_version}"
+  echo
+}
+
 main() {
   need_root
   require_expected_os
   install_packages
   fetch_project
+  print_downloaded_version
   chmod +x "$INSTALL_DIR/deploy.sh"
   if [ -f "$INSTALL_DIR/uninstall.sh" ]; then
     chmod +x "$INSTALL_DIR/uninstall.sh"

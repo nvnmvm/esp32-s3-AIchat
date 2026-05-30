@@ -46,6 +46,8 @@ Ubuntu：
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install-ubuntu.sh -o install-ubuntu.sh && sudo bash install-ubuntu.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
 ```
 
+安装脚本拉取代码后会输出 `Downloaded cloud code version`，部署完成后会输出 `Configured APP_VERSION`、`Git code version` 和 `/health` 实际运行版本，方便确认 VPS 当前运行的云端版本。
+
 ## 云端配置
 
 `.env` 关键项：
@@ -73,7 +75,7 @@ LLM_TIMEOUT_SECONDS=30
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.0-phase2-complete
+APP_VERSION=v2.1.1-phase2-complete
 ```
 
 ## 快捷管理界面
@@ -93,7 +95,7 @@ sudo bash manage.sh
 - 一键更新：保留数据更新或不保留运行数据更新。
 - 卸载 WebSocket 服务。
 
-`v2.1.0-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新。其他旧版本或未知版本会在更新菜单中提示先备份，或选择不保留运行数据更新。
+`v2.1.1-phase2-complete` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新。其他旧版本或未知版本会在更新菜单中提示先备份，或选择不保留运行数据更新。
 
 ## 验收标准
 
@@ -108,5 +110,5 @@ sudo bash manage.sh
 
 ## 发布版本
 
-- 云端 tag/release：`v2.1.0-phase2-complete`
+- 云端 tag/release：`v2.1.1-phase2-complete`
 - 配套固件 tag/release：`v2.1.0-phase2-complete`

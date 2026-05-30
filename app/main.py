@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v2.1.0-phase2-complete")
+APP_VERSION = os.getenv("APP_VERSION", "v2.1.1-phase2-complete")
 APP_PHASE = "voice-screen-loopback"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"

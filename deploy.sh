@@ -157,6 +157,31 @@ check_port_mapping() {
   fi
 }
 
+print_version_summary() {
+  local git_version="unknown"
+  local health_json=""
+  local health_version=""
+
+  if command -v git >/dev/null 2>&1 && [ -d "$PROJECT_DIR/.git" ]; then
+    git_version="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || printf 'unknown')"
+  fi
+
+  health_json="$(curl -fsS "http://127.0.0.1:${server_port}/health" 2>/dev/null || true)"
+  if [ -n "$health_json" ]; then
+    health_version="$(printf '%s' "$health_json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  fi
+
+  echo "=== Cloud version ==="
+  echo "Configured APP_VERSION: v2.1.1-phase2-complete"
+  echo "Git code version: ${git_version}"
+  if [ -n "$health_version" ]; then
+    echo "Running /health version: ${health_version}"
+  else
+    echo "Running /health version: unavailable; check logs if the container is still starting"
+  fi
+  echo
+}
+
 main() {
   require_docker
   load_existing_env
@@ -199,7 +224,7 @@ LLM_TIMEOUT_SECONDS=30
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
 CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.0-phase2-complete
+APP_VERSION=v2.1.1-phase2-complete
 EOF
 
   cd "$PROJECT_DIR"
@@ -212,6 +237,7 @@ EOF
   echo
   echo "Deployment complete."
   echo
+  print_version_summary
   echo "=== ESP32 firmware config ==="
   echo "WebSocket URL: ws://${public_ip}:${server_port}/ws"
   echo "WebSocket token: $token"
