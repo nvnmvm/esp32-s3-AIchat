@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
 from logging.handlers import TimedRotatingFileHandler
 import math
 import os
+import re
 import secrets
 import shutil
 import struct
@@ -13,7 +16,6 @@ import time
 import urllib.error
 import urllib.request
 import wave
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -21,20 +23,42 @@ from typing import Any, Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import JSONResponse
 
+from app.core.audio_utils import (
+    AudioReport,
+    analyze_pcm16le,
+    pcm16_rms,
+)
+from app.core.model_config import active_item, load_model_config, masked_config_summary
+from app.core.vad import RecordingBuffer, VadConfig
+from app.providers.asr.base import AsrResult
+from app.providers.asr.factory import provider_chain, transcribe_with_fallback
+from app.providers.asr.vosk_local import VoskLocalASRProvider
+
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v3.0.0-phase3-session-voice")
-APP_PHASE = "session-asr-ai-tts"
+APP_VERSION = os.getenv("APP_VERSION", "v3.0.1-phase3-asr-quality")
+APP_PHASE = "asr-quality-pipeline"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
+
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", AI_API_KEY)
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
 AI_API_BASE = os.getenv("AI_API_BASE", DEEPSEEK_API_BASE)
 AI_MODEL = os.getenv("AI_MODEL", DEEPSEEK_MODEL)
-LLM_PROVIDER = os.getenv("LLM_PROVIDER", "phase3").lower()
-ASR_PROVIDER = os.getenv("ASR_PROVIDER", "vosk").lower()
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
+
+ASR_PROVIDER = os.getenv("ASR_PROVIDER", "auto").lower()
+ASR_PRIMARY = os.getenv("ASR_PRIMARY", "configured_asr").lower()
+ASR_FALLBACK = os.getenv("ASR_FALLBACK", "vosk").lower()
+ASR_CONTEXT = os.getenv("ASR_CONTEXT", "小一小一,ESP32-S3,高数,数据结构,计算机科学与技术")
+ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh")
+ASR_TIMEOUT_SECONDS = int(os.getenv("ASR_TIMEOUT_SECONDS", "60"))
+DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+DASHSCOPE_ASR_MODEL = os.getenv("DASHSCOPE_ASR_MODEL", "qwen3-asr-flash")
+DASHSCOPE_BASE_HTTP_API_URL = os.getenv("DASHSCOPE_BASE_HTTP_API_URL", "https://dashscope.aliyuncs.com/api/v1")
+
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge").lower()
 LOG_PAYLOADS = os.getenv("LOG_PAYLOADS", "false").lower() == "true"
 LOG_TO_FILE = os.getenv("LOG_TO_FILE", "true").lower() == "true"
@@ -43,7 +67,9 @@ SESSION_DIR = Path(os.getenv("SESSION_DIR", "runtime/session"))
 SESSION_RECORDINGS_DIR = Path(os.getenv("SESSION_RECORDINGS_DIR", str(SESSION_DIR / "录音")))
 SESSION_TRANSCRIPTS_DIR = Path(os.getenv("SESSION_TRANSCRIPTS_DIR", str(SESSION_DIR / "录音转文字")))
 SESSION_ANSWERS_DIR = Path(os.getenv("SESSION_ANSWERS_DIR", str(SESSION_DIR / "ai回答的文本")))
+SESSION_AUDIO_REPORT_DIR = Path(os.getenv("SESSION_AUDIO_REPORT_DIR", str(SESSION_DIR / "audio_report")))
 CONVERSATION_DIR = Path(os.getenv("CONVERSATION_DIR", str(SESSION_TRANSCRIPTS_DIR)))
+MODEL_CONFIG_PATH = Path(os.getenv("MODEL_CONFIG_PATH", "runtime/config/models.json"))
 SAVE_DEBUG_WAV = os.getenv("SAVE_DEBUG_WAV", "false").lower() == "true"
 DEBUG_AUDIO_DIR = Path(os.getenv("DEBUG_AUDIO_DIR", "runtime/audio"))
 VOSK_MODEL_DIR = Path(os.getenv("VOSK_MODEL_DIR", "runtime/models/vosk-model-small-cn-0.22"))
@@ -54,9 +80,10 @@ VOSK_MODEL_URL = os.getenv(
 VOSK_AUTO_DOWNLOAD = os.getenv("VOSK_AUTO_DOWNLOAD", "true").lower() == "true"
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "zh-CN-XiaoxiaoNeural")
 FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
+SEND_ASR_TEXT = os.getenv("SEND_ASR_TEXT", "false").lower() == "true"
+SEND_ANSWER_TEXT = os.getenv("SEND_ANSWER_TEXT", "true").lower() == "true"
 
 logger = logging.getLogger(APP_NAME)
-
 app = FastAPI(title=APP_NAME)
 
 
@@ -79,18 +106,74 @@ MAX_WS_MESSAGE_BYTES = env_int("MAX_WS_MESSAGE_BYTES", 1048576)
 AUDIO_SAMPLE_RATE = env_int("AUDIO_SAMPLE_RATE", 16000)
 AUDIO_CHANNELS = env_int("AUDIO_CHANNELS", 1)
 AUDIO_SAMPLE_WIDTH_BYTES = env_int("AUDIO_SAMPLE_WIDTH_BYTES", 2)
+AUDIO_CHUNK_MS = env_int("AUDIO_CHUNK_MS", 40)
 MAX_RECORDING_BYTES = env_int("MAX_RECORDING_BYTES", AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * 12)
+VAD_MIN_RECORDING_MS = env_int("VAD_MIN_RECORDING_MS", 900)
+VAD_MAX_RECORDING_MS = env_int("VAD_MAX_RECORDING_MS", 12000)
 VAD_MIN_RECORDING_BYTES = env_int("VAD_MIN_RECORDING_BYTES", AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES)
 VAD_SILENCE_RMS = env_int("VAD_SILENCE_RMS", 450)
 VAD_SILENCE_CHUNKS = env_int("VAD_SILENCE_CHUNKS", 12)
+VAD_PREROLL_MS = env_int("VAD_PREROLL_MS", 300)
+VAD_POSTROLL_MS = env_int("VAD_POSTROLL_MS", 240)
 MOCK_TTS_DURATION_MS = env_int("MOCK_TTS_DURATION_MS", 900)
 MOCK_TTS_TONE_HZ = env_int("MOCK_TTS_TONE_HZ", 660)
 LLM_TIMEOUT_SECONDS = env_int("LLM_TIMEOUT_SECONDS", 30)
 TTS_TIMEOUT_SECONDS = env_int("TTS_TIMEOUT_SECONDS", 45)
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 7)
-SESSION_RETENTION_DAYS = env_int("SESSION_RETENTION_DAYS", 1)
+SESSION_RETENTION_DAYS = env_int("SESSION_RETENTION_DAYS", 3)
 ANSWER_MAX_CHARS = env_int("ANSWER_MAX_CHARS", 800)
 TTS_MAX_CHARS = env_int("TTS_MAX_CHARS", 500)
+
+
+@dataclass
+class SettingsSnapshot:
+    app_version: str
+    asr_provider: str
+    asr_primary: str
+    asr_fallback: str
+    asr_context: str
+    asr_language: str
+    asr_timeout_seconds: int
+    audio_sample_rate: int
+    audio_channels: int
+    audio_sample_width_bytes: int
+    vosk_model_dir: Path
+    vosk_model_url: str
+    vosk_auto_download: bool
+    dashscope_api_key: str
+    dashscope_asr_model: str
+    dashscope_base_http_api_url: str
+    ai_api_key: str
+    ai_api_base: str
+    ai_model: str
+    model_config: dict[str, Any]
+
+
+@dataclass
+class VoiceSession:
+    recording: bool = False
+    pcm: bytearray = field(default_factory=bytearray)
+    silence_chunks: int = 0
+    turn_id: int = 0
+    recording_path: Optional[Path] = None
+    transcript_path: Optional[Path] = None
+    answer_path: Optional[Path] = None
+    audio_report_path: Optional[Path] = None
+    meta_path: Optional[Path] = None
+    recording_buffer: Optional[RecordingBuffer] = None
+
+    def reset_recording(self) -> None:
+        self.recording = False
+        self.pcm.clear()
+        self.silence_chunks = 0
+        self.recording_buffer = None
+
+    def clear_transcript(self) -> None:
+        self.recording_path = None
+        self.transcript_path = None
+        self.answer_path = None
+        self.audio_report_path = None
+        self.meta_path = None
 
 
 def configure_logging() -> None:
@@ -116,8 +199,12 @@ def configure_logging() -> None:
         except OSError:
             root_logger.warning("Failed to remove old log file path=%s", path, exc_info=True)
 
+    log_path = LOG_DIR / "cloud.log"
+    if any(isinstance(handler, TimedRotatingFileHandler) and Path(handler.baseFilename) == log_path for handler in root_logger.handlers):
+        return
+
     file_handler = TimedRotatingFileHandler(
-        LOG_DIR / "cloud.log",
+        log_path,
         when="midnight",
         interval=1,
         backupCount=LOG_RETENTION_DAYS,
@@ -130,28 +217,34 @@ def configure_logging() -> None:
 
 configure_logging()
 
-_vosk_model: Any = None
+
+def current_model_config() -> dict[str, Any]:
+    return load_model_config(MODEL_CONFIG_PATH)
 
 
-@dataclass
-class VoiceSession:
-    recording: bool = False
-    pcm: bytearray = field(default_factory=bytearray)
-    silence_chunks: int = 0
-    turn_id: int = 0
-    recording_path: Optional[Path] = None
-    transcript_path: Optional[Path] = None
-    answer_path: Optional[Path] = None
-
-    def reset_recording(self) -> None:
-        self.recording = False
-        self.pcm.clear()
-        self.silence_chunks = 0
-
-    def clear_transcript(self) -> None:
-        self.recording_path = None
-        self.transcript_path = None
-        self.answer_path = None
+def current_settings() -> SettingsSnapshot:
+    return SettingsSnapshot(
+        app_version=APP_VERSION,
+        asr_provider=ASR_PROVIDER,
+        asr_primary=ASR_PRIMARY,
+        asr_fallback=ASR_FALLBACK,
+        asr_context=ASR_CONTEXT,
+        asr_language=ASR_LANGUAGE,
+        asr_timeout_seconds=ASR_TIMEOUT_SECONDS,
+        audio_sample_rate=AUDIO_SAMPLE_RATE,
+        audio_channels=AUDIO_CHANNELS,
+        audio_sample_width_bytes=AUDIO_SAMPLE_WIDTH_BYTES,
+        vosk_model_dir=VOSK_MODEL_DIR,
+        vosk_model_url=VOSK_MODEL_URL,
+        vosk_auto_download=VOSK_AUTO_DOWNLOAD,
+        dashscope_api_key=DASHSCOPE_API_KEY,
+        dashscope_asr_model=DASHSCOPE_ASR_MODEL,
+        dashscope_base_http_api_url=DASHSCOPE_BASE_HTTP_API_URL,
+        ai_api_key=DEEPSEEK_API_KEY or AI_API_KEY,
+        ai_api_base=AI_API_BASE,
+        ai_model=AI_MODEL,
+        model_config=current_model_config(),
+    )
 
 
 def client_name(websocket: WebSocket) -> str:
@@ -188,21 +281,6 @@ async def send_json(websocket: WebSocket, message_type: str, **fields: Any) -> N
     await websocket.send_text(json_text(message_type, **fields))
 
 
-def pcm16_rms(data: bytes) -> float:
-    if len(data) < 2:
-        return 0.0
-
-    usable = len(data) - (len(data) % 2)
-    sample_count = usable // 2
-    if sample_count == 0:
-        return 0.0
-
-    total = 0
-    for (sample,) in struct.iter_unpack("<h", data[:usable]):
-        total += sample * sample
-    return math.sqrt(total / sample_count)
-
-
 def make_tone_pcm(duration_ms: Optional[int] = None, frequency_hz: Optional[int] = None) -> bytes:
     duration_ms = duration_ms or MOCK_TTS_DURATION_MS
     frequency_hz = frequency_hz or MOCK_TTS_TONE_HZ
@@ -220,8 +298,8 @@ def safe_device_slug(device_id: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in device_id)[:48] or "device"
 
 
-def session_dirs() -> tuple[Path, Path, Path]:
-    return SESSION_RECORDINGS_DIR, SESSION_TRANSCRIPTS_DIR, SESSION_ANSWERS_DIR
+def session_dirs() -> tuple[Path, ...]:
+    return SESSION_RECORDINGS_DIR, SESSION_TRANSCRIPTS_DIR, SESSION_ANSWERS_DIR, SESSION_AUDIO_REPORT_DIR
 
 
 def ensure_session_dirs() -> None:
@@ -266,6 +344,13 @@ def write_session_text(directory: Path, stem: str, text: str) -> Path:
     return path
 
 
+def write_session_json(directory: Path, stem: str, suffix: str, data: dict[str, Any]) -> Path:
+    ensure_session_dirs()
+    path = directory / f"{stem}{suffix}.json"
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def write_debug_wav(device_id: str, turn_id: int, pcm: bytes) -> Optional[Path]:
     if not SAVE_DEBUG_WAV:
         return None
@@ -283,111 +368,63 @@ def write_debug_wav(device_id: str, turn_id: int, pcm: bytes) -> Optional[Path]:
 def transcribe_phase2_audio(duration_s: float, rms: float, byte_count: int) -> str:
     if rms < VAD_SILENCE_RMS:
         return (
-            f"阶段二收到一段音频，时长约 {duration_s:.1f} 秒，"
-            f"但音量偏低，RMS {rms:.0f}。请检查麦克风接线、增益和供电。"
+            f"阶段三收到一段音频，时长约 {duration_s:.1f} 秒，"
+            f"但音量偏低，RMS {rms:.0f}。请检查麦克风、声道、增益和供电。"
         )
 
     return (
-        f"阶段二收到一段测试语音，时长约 {duration_s:.1f} 秒，"
+        f"阶段三收到一段可用录音，时长约 {duration_s:.1f} 秒，"
         f"音量 RMS {rms:.0f}，PCM 字节数 {byte_count}。"
     )
 
 
-def download_vosk_model() -> None:
-    if VOSK_MODEL_DIR.exists():
-        return
-
-    VOSK_MODEL_DIR.parent.mkdir(parents=True, exist_ok=True)
-    archive_path = VOSK_MODEL_DIR.parent / (Path(VOSK_MODEL_URL).name or "vosk-model.zip")
-    logger.info("Downloading Vosk model url=%s target=%s", VOSK_MODEL_URL, archive_path)
-
-    with urllib.request.urlopen(VOSK_MODEL_URL, timeout=120) as response:
-        with archive_path.open("wb") as output:
-            shutil.copyfileobj(response, output)
-
-    with zipfile.ZipFile(archive_path) as archive:
-        archive.extractall(VOSK_MODEL_DIR.parent)
-
-    try:
-        archive_path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("Failed to remove Vosk model archive path=%s", archive_path, exc_info=True)
-
-    if not VOSK_MODEL_DIR.exists():
-        raise RuntimeError(f"Vosk model was downloaded, but expected directory is missing: {VOSK_MODEL_DIR}")
-
-
-def get_vosk_model() -> Any:
-    global _vosk_model
-    if _vosk_model is not None:
-        return _vosk_model
-
-    if not VOSK_MODEL_DIR.exists():
-        if VOSK_AUTO_DOWNLOAD:
-            download_vosk_model()
-        else:
-            raise RuntimeError(f"Vosk model directory does not exist: {VOSK_MODEL_DIR}")
-
-    try:
-        from vosk import KaldiRecognizer, Model, SetLogLevel  # noqa: F401
-    except ImportError as exc:
-        raise RuntimeError("ASR_PROVIDER=vosk requires the vosk Python package.") from exc
-
-    SetLogLevel(-1)
-    _vosk_model = Model(str(VOSK_MODEL_DIR))
-    return _vosk_model
-
-
 def transcribe_vosk_wav(wav_path: Path) -> str:
-    try:
-        from vosk import KaldiRecognizer
-    except ImportError as exc:
-        raise RuntimeError("ASR_PROVIDER=vosk requires the vosk Python package.") from exc
-
-    model = get_vosk_model()
-    results: list[str] = []
-    with wave.open(str(wav_path), "rb") as wav_file:
-        if wav_file.getnchannels() != 1 or wav_file.getsampwidth() != 2:
-            raise RuntimeError("Vosk ASR expects mono 16-bit WAV audio.")
-        if wav_file.getframerate() != AUDIO_SAMPLE_RATE:
-            raise RuntimeError(f"Vosk ASR expects {AUDIO_SAMPLE_RATE} Hz WAV audio.")
-
-        recognizer = KaldiRecognizer(model, wav_file.getframerate())
-        while True:
-            chunk = wav_file.readframes(4000)
-            if not chunk:
-                break
-            if recognizer.AcceptWaveform(chunk):
-                part = json.loads(recognizer.Result()).get("text", "").strip()
-                if part:
-                    results.append(part)
-
-        final = json.loads(recognizer.FinalResult()).get("text", "").strip()
-        if final:
-            results.append(final)
-
-    text = " ".join(results).strip()
-    return text or "没有识别到有效语音，请靠近麦克风后再说一遍。"
+    pcm = wav_path.read_bytes()
+    report = AudioReport(
+        duration_s=0,
+        byte_count=len(pcm),
+        rms=0,
+        peak=0,
+        clipping_ratio=0,
+        zero_ratio=0,
+        dc_offset=0,
+        speech_ratio=0,
+        verdict="ok",
+        warnings=[],
+    )
+    provider = VoskLocalASRProvider(
+        model_dir=VOSK_MODEL_DIR,
+        model_url=VOSK_MODEL_URL,
+        auto_download=VOSK_AUTO_DOWNLOAD,
+        sample_rate=AUDIO_SAMPLE_RATE,
+    )
+    return provider.transcribe(wav_path, report, context=ASR_CONTEXT).text
 
 
 def transcribe_audio_file(wav_path: Path, duration_s: float, rms: float, byte_count: int) -> str:
-    if ASR_PROVIDER == "vosk":
-        return transcribe_vosk_wav(wav_path)
-    if ASR_PROVIDER == "auto":
-        try:
-            return transcribe_vosk_wav(wav_path)
-        except Exception:
-            logger.warning("Vosk ASR failed in auto mode; falling back to phase2 text.", exc_info=True)
-    return transcribe_phase2_audio(duration_s, rms, byte_count)
+    report = AudioReport(
+        duration_s=duration_s,
+        byte_count=byte_count,
+        rms=rms,
+        peak=0,
+        clipping_ratio=0,
+        zero_ratio=0,
+        dc_offset=0,
+        speech_ratio=0,
+        verdict="ok" if duration_s >= 0.8 and rms >= VAD_SILENCE_RMS else "too_quiet",
+        warnings=[],
+    )
+    result = transcribe_with_fallback(wav_path, report, current_settings())
+    return result.text
 
 
 def build_phase3_answer_from_text(transcript: str) -> str:
     transcript = transcript.strip()
     if not transcript:
-        return "云端没有读取到有效识别文本，请重新唤醒后再说一遍。"
+        return "云端没有读取到有效识别文本，请重新唤醒后靠近麦克风完整说一遍。"
 
     return (
-        "阶段三会话链路已跑通：录音、识别文本和 AI 回答都已保存到 session 文件夹。"
+        "阶段三会话链路已跑通。录音、识别文本和 AI 回答已保存到 session 文件夹。"
         f"我识别到你说：{transcript}"
     )
 
@@ -399,20 +436,23 @@ def limit_text(text: str, max_chars: int) -> str:
     return cleaned[: max(0, max_chars - 3)].rstrip() + "..."
 
 
-def deepseek_chat(user_text: str) -> str:
-    api_key = DEEPSEEK_API_KEY or AI_API_KEY
-    if not api_key:
-        raise RuntimeError("DEEPSEEK_API_KEY or AI_API_KEY is not configured.")
+def strip_thinking_tags(text: str) -> str:
+    return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
 
-    url = AI_API_BASE.rstrip("/") + "/chat/completions"
+
+def openai_compatible_chat(user_text: str, *, provider_name: str, api_key: str, base_url: str, model: str) -> str:
+    if not api_key:
+        raise RuntimeError(f"{provider_name} API key is not configured.")
+
+    url = base_url.rstrip("/") + "/chat/completions"
     payload = {
-        "model": AI_MODEL,
+        "model": model,
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "你是 ESP32-S3 私人语音机器人。回答要简洁、直接、适合在小屏幕滚动显示，"
-                    "默认使用中文，不要输出 Markdown 表格。"
+                    "你是 ESP32-S3 私有语音机器人。回答要简短、直接、适合小屏幕滚动显示。"
+                    "默认使用中文，不要输出 Markdown，不要输出思考过程。"
                 ),
             },
             {"role": "user", "content": user_text},
@@ -435,23 +475,59 @@ def deepseek_chat(user_text: str) -> str:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"DeepSeek HTTP {exc.code}: {body[:240]}") from exc
+        raise RuntimeError(f"{provider_name} HTTP {exc.code}: {body[:240]}") from exc
 
     try:
         answer = data["choices"][0]["message"]["content"].strip()
     except (KeyError, IndexError, TypeError) as exc:
-        raise RuntimeError(f"Unexpected DeepSeek response: {data}") from exc
+        raise RuntimeError(f"Unexpected {provider_name} response: {data}") from exc
 
+    answer = strip_thinking_tags(answer)
     if not answer:
-        raise RuntimeError("DeepSeek returned an empty answer.")
+        raise RuntimeError(f"{provider_name} returned an empty answer.")
     return answer
 
 
+def deepseek_chat(user_text: str) -> str:
+    settings = current_settings()
+    llm_config = active_item(settings.model_config, "llm_models")
+    if llm_config:
+        return openai_compatible_chat(
+            user_text,
+            provider_name=str(llm_config.get("brand") or "configured-llm"),
+            api_key=str(llm_config.get("api_key") or ""),
+            base_url=str(llm_config.get("base_url") or AI_API_BASE),
+            model=str(llm_config.get("model") or AI_MODEL),
+        )
+
+    return openai_compatible_chat(
+        user_text,
+        provider_name="DeepSeek",
+        api_key=DEEPSEEK_API_KEY or AI_API_KEY,
+        base_url=AI_API_BASE,
+        model=AI_MODEL,
+    )
+
+
 async def build_answer_text(transcript: str) -> str:
-    if LLM_PROVIDER in {"deepseek", "openai", "openai-compatible"} or (
-        LLM_PROVIDER == "auto" and (DEEPSEEK_API_KEY or AI_API_KEY)
-    ):
-        return await asyncio.to_thread(deepseek_chat, transcript)
+    if LLM_PROVIDER == "phase3":
+        return build_phase3_answer_from_text(transcript)
+
+    settings = current_settings()
+    has_configured_llm = active_item(settings.model_config, "llm_models") is not None
+    has_env_key = bool(DEEPSEEK_API_KEY or AI_API_KEY)
+    should_call_llm = LLM_PROVIDER in {"deepseek", "openai", "openai-compatible", "auto"} and (
+        has_configured_llm or has_env_key or LLM_PROVIDER != "auto"
+    )
+
+    if should_call_llm:
+        try:
+            return await asyncio.to_thread(deepseek_chat, transcript)
+        except Exception:
+            if LLM_PROVIDER != "auto":
+                raise
+            logger.warning("Configured LLM failed in auto mode; falling back to phase3 answer.", exc_info=True)
+
     return build_phase3_answer_from_text(transcript)
 
 
@@ -517,12 +593,9 @@ def miniaudio_to_pcm_s16le(media_path: Path) -> bytes:
 def media_to_pcm_s16le(media_path: Path) -> bytes:
     try:
         return miniaudio_to_pcm_s16le(media_path)
-    except Exception as exc:
+    except Exception:
         logger.warning("miniaudio failed to decode TTS media; trying ffmpeg fallback.", exc_info=True)
-        try:
-            return ffmpeg_to_pcm_s16le(media_path)
-        except Exception as ffmpeg_exc:
-            raise RuntimeError("Failed to convert TTS media to PCM with miniaudio or ffmpeg.") from ffmpeg_exc
+        return ffmpeg_to_pcm_s16le(media_path)
 
 
 async def synthesize_edge_tts_pcm(text: str) -> bytes:
@@ -547,39 +620,89 @@ async def synthesize_tts_pcm(text: str) -> bytes:
 async def build_phase3_turn(
     stem: str,
     wav_path: Path,
-    duration_s: float,
-    rms: float,
-    byte_count: int,
-) -> tuple[str, str, Path, Path]:
-    asr_text = await asyncio.to_thread(transcribe_audio_file, wav_path, duration_s, rms, byte_count)
-    transcript_path = write_session_text(SESSION_TRANSCRIPTS_DIR, stem, asr_text)
-    answer_text = await build_answer_text(asr_text)
+    audio_report: AudioReport,
+) -> tuple[AsrResult, str, Path, Path, Path]:
+    settings = current_settings()
+    asr_result = await asyncio.to_thread(transcribe_with_fallback, wav_path, audio_report, settings)
+    transcript_path = write_session_text(SESSION_TRANSCRIPTS_DIR, stem, asr_result.text)
+    answer_text = await build_answer_text(asr_result.text)
     answer_path = write_session_text(SESSION_ANSWERS_DIR, stem, answer_text)
-    return asr_text, answer_text, transcript_path, answer_path
+    meta_path = write_session_json(
+        SESSION_AUDIO_REPORT_DIR,
+        stem,
+        ".turn_meta",
+        {
+            "version": APP_VERSION,
+            "asr": {
+                "provider": asr_result.provider,
+                "confidence": asr_result.confidence,
+                "duration_ms": asr_result.duration_ms,
+                "fallback_from": asr_result.fallback_from,
+            },
+            "audio_report": audio_report.to_dict(),
+        },
+    )
+    return asr_result, answer_text, transcript_path, answer_path, meta_path
+
+
+def make_vad_config() -> VadConfig:
+    return VadConfig(
+        min_recording_ms=VAD_MIN_RECORDING_MS,
+        max_recording_ms=VAD_MAX_RECORDING_MS,
+        silence_rms=VAD_SILENCE_RMS,
+        silence_chunks=VAD_SILENCE_CHUNKS,
+        chunk_ms=AUDIO_CHUNK_MS,
+        preroll_ms=VAD_PREROLL_MS,
+        postroll_ms=VAD_POSTROLL_MS,
+        sample_rate=AUDIO_SAMPLE_RATE,
+        channels=AUDIO_CHANNELS,
+        sample_width_bytes=AUDIO_SAMPLE_WIDTH_BYTES,
+    )
 
 
 async def finish_recording(websocket: WebSocket, session: VoiceSession, device_id: str, reason: str) -> None:
+    if not session.recording and not session.pcm:
+        logger.info("Ignored finish_record device_id=%s because session is not recording", device_id)
+        return
     if not session.pcm:
         await send_json(websocket, "error", text="没有收到有效 PCM 音频。")
         session.reset_recording()
         return
 
     pcm = bytes(session.pcm)
+    vad_diagnostics = session.recording_buffer.diagnostics() if session.recording_buffer else {}
     session.reset_recording()
 
-    duration_s = len(pcm) / float(AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * AUDIO_CHANNELS)
-    rms = pcm16_rms(pcm)
     cleanup_old_session_files()
     stem = session_file_stem(device_id, session.turn_id)
     session.recording_path = write_session_wav(stem, pcm)
     debug_wav_path = write_debug_wav(device_id, session.turn_id, pcm)
+    audio_report = analyze_pcm16le(
+        pcm,
+        sample_rate=AUDIO_SAMPLE_RATE,
+        channels=AUDIO_CHANNELS,
+        sample_width_bytes=AUDIO_SAMPLE_WIDTH_BYTES,
+        silence_rms=VAD_SILENCE_RMS,
+        min_duration_s=VAD_MIN_RECORDING_MS / 1000.0,
+    )
+    report_data = audio_report.to_dict()
+    report_data["finish_reason"] = reason
+    report_data["vad"] = vad_diagnostics
+    session.audio_report_path = SESSION_AUDIO_REPORT_DIR / f"{stem}.audio_report.json"
+    session.audio_report_path.parent.mkdir(parents=True, exist_ok=True)
+    session.audio_report_path.write_text(
+        json.dumps(report_data, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
     logger.info(
-        "Processed phase3 audio turn=%d bytes=%d duration_s=%.2f rms=%.1f reason=%s recording_path=%s debug_wav_path=%s",
+        "Processed audio turn=%d bytes=%d duration_s=%.2f rms=%.1f peak=%d verdict=%s reason=%s recording_path=%s debug_wav_path=%s",
         session.turn_id,
         len(pcm),
-        duration_s,
-        rms,
+        audio_report.duration_s,
+        audio_report.rms,
+        audio_report.peak,
+        audio_report.verdict,
         reason,
         session.recording_path,
         debug_wav_path,
@@ -587,44 +710,54 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
 
     try:
         await send_json(websocket, "status", text="识别中...", state="asr", turn_id=session.turn_id)
-        asr_text, answer_text, session.transcript_path, session.answer_path = await build_phase3_turn(
+        asr_result, answer_text, session.transcript_path, session.answer_path, session.meta_path = await build_phase3_turn(
             stem=stem,
             wav_path=session.recording_path,
-            duration_s=duration_s,
-            rms=rms,
-            byte_count=len(pcm),
+            audio_report=audio_report,
         )
-        await send_json(
-            websocket,
-            "asr_text",
-            text=asr_text,
-            turn_id=session.turn_id,
-            transcript_file=session.transcript_path.name,
-        )
+        if SEND_ASR_TEXT:
+            await send_json(
+                websocket,
+                "asr_text",
+                text=asr_result.text,
+                turn_id=session.turn_id,
+                transcript_file=session.transcript_path.name,
+                provider=asr_result.provider,
+            )
+
         await send_json(websocket, "status", text="思考中...", state="thinking", turn_id=session.turn_id)
         display_answer = limit_text(answer_text, ANSWER_MAX_CHARS)
+        if SEND_ANSWER_TEXT:
+            await send_json(
+                websocket,
+                "answer_text",
+                text=display_answer,
+                turn_id=session.turn_id,
+                answer_file=session.answer_path.name,
+                answer_chars=len(answer_text),
+                truncated=display_answer != " ".join(answer_text.split()),
+            )
+
+        await send_json(websocket, "status", text="语音合成中...", state="tts", turn_id=session.turn_id)
+        audio = await synthesize_tts_pcm(answer_text)
         await send_json(
             websocket,
-            "answer_text",
+            "audio_start",
+            sample_rate=AUDIO_SAMPLE_RATE,
+            format="pcm_s16le",
             text=display_answer,
             turn_id=session.turn_id,
-            answer_file=session.answer_path.name,
-            answer_chars=len(answer_text),
-            truncated=display_answer != " ".join(answer_text.split()),
         )
-        await send_json(websocket, "status", text="语音合成中...", state="tts", turn_id=session.turn_id)
-        await send_json(websocket, "audio_start", sample_rate=AUDIO_SAMPLE_RATE, format="pcm_s16le")
-
-        audio = await synthesize_tts_pcm(answer_text)
         chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES // 10
         for start in range(0, len(audio), chunk_size):
             await websocket.send_bytes(audio[start:start + chunk_size])
 
-        await send_json(websocket, "audio_end")
+        await send_json(websocket, "audio_end", turn_id=session.turn_id)
         await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
     except Exception:
-        logger.exception("Failed to process phase3 turn=%d device_id=%s", session.turn_id, device_id)
+        logger.exception("Failed to process turn=%d device_id=%s", session.turn_id, device_id)
         await send_json(websocket, "error", text="云端处理本轮语音失败，请查看 VPS 日志。")
+        await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
     finally:
         session.clear_transcript()
 
@@ -637,11 +770,16 @@ async def handle_json_message(websocket: WebSocket, session: VoiceSession, devic
         session.turn_id += 1
         session.reset_recording()
         session.recording = True
+        session.recording_buffer = RecordingBuffer(make_vad_config())
         await send_json(websocket, "status", text="录音中...", state="recording", turn_id=session.turn_id)
         return
 
     if message_type in {"finish_record", "vad_end"}:
         await finish_recording(websocket, session, device_id, message_type)
+        return
+
+    if message_type == "audio_stats":
+        logger.info("ESP32 audio_stats device_id=%s payload=%s", device_id, payload)
         return
 
     if message_type == "cancel":
@@ -681,19 +819,19 @@ async def handle_binary_message(websocket: WebSocket, session: VoiceSession, dev
         return
 
     session.pcm.extend(data)
-    rms = pcm16_rms(data)
-    if len(session.pcm) >= VAD_MIN_RECORDING_BYTES and rms < VAD_SILENCE_RMS:
-        session.silence_chunks += 1
-    else:
-        session.silence_chunks = 0
-
-    if session.silence_chunks >= VAD_SILENCE_CHUNKS:
-        await finish_recording(websocket, session, device_id, "vad_silence")
+    if session.recording_buffer is None:
+        session.recording_buffer = RecordingBuffer(make_vad_config())
+    should_finish, finish_reason = session.recording_buffer.feed(data)
+    session.silence_chunks = session.recording_buffer.silence_chunks_seen
+    if should_finish:
+        await finish_recording(websocket, session, device_id, finish_reason or "vad")
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
     ensure_session_dirs()
+    settings = current_settings()
+    config = settings.model_config
     return JSONResponse(
         {
             "ok": True,
@@ -708,9 +846,19 @@ async def health() -> JSONResponse:
                 "channels": AUDIO_CHANNELS,
                 "sample_width_bytes": AUDIO_SAMPLE_WIDTH_BYTES,
                 "format": "pcm_s16le",
+                "chunk_ms": AUDIO_CHUNK_MS,
             },
-            "ai_api_key_configured": bool(AI_API_KEY or DEEPSEEK_API_KEY),
+            "vad": {
+                "min_recording_ms": VAD_MIN_RECORDING_MS,
+                "max_recording_ms": VAD_MAX_RECORDING_MS,
+                "silence_rms": VAD_SILENCE_RMS,
+                "silence_chunks": VAD_SILENCE_CHUNKS,
+                "preroll_ms": VAD_PREROLL_MS,
+                "postroll_ms": VAD_POSTROLL_MS,
+            },
+            "ai_api_key_configured": bool(AI_API_KEY or DEEPSEEK_API_KEY or active_item(config, "llm_models")),
             "asr_provider": ASR_PROVIDER,
+            "asr_provider_chain": provider_chain(settings),
             "llm_provider": LLM_PROVIDER,
             "tts_provider": TTS_PROVIDER,
             "tts_mode": "local-test-tone" if TTS_PROVIDER == "tone" else TTS_PROVIDER,
@@ -720,18 +868,27 @@ async def health() -> JSONResponse:
                 "recordings": str(SESSION_RECORDINGS_DIR),
                 "transcripts": str(SESSION_TRANSCRIPTS_DIR),
                 "answers": str(SESSION_ANSWERS_DIR),
+                "audio_report": str(SESSION_AUDIO_REPORT_DIR),
             },
             "conversation_dir": str(CONVERSATION_DIR),
             "conversation_storage": "session-files-retention-cleanup",
             "save_debug_wav": SAVE_DEBUG_WAV,
             "debug_audio_dir": str(DEBUG_AUDIO_DIR),
             "vosk_model_dir": str(VOSK_MODEL_DIR),
+            "vosk_model_exists": VOSK_MODEL_DIR.exists(),
             "vosk_auto_download": VOSK_AUTO_DOWNLOAD,
+            "dashscope_asr_model": DASHSCOPE_ASR_MODEL,
+            "dashscope_key_configured": bool(DASHSCOPE_API_KEY),
             "edge_tts_voice": EDGE_TTS_VOICE,
             "tts_decoder": "miniaudio-primary-ffmpeg-fallback",
             "ffmpeg_bin": FFMPEG_BIN,
             "answer_max_chars": ANSWER_MAX_CHARS,
             "tts_max_chars": TTS_MAX_CHARS,
+            "send_asr_text": SEND_ASR_TEXT,
+            "send_answer_text": SEND_ANSWER_TEXT,
+            "model_config_path": str(MODEL_CONFIG_PATH),
+            "model_config_exists": MODEL_CONFIG_PATH.exists(),
+            "models": masked_config_summary(config),
             "log_to_file": LOG_TO_FILE,
             "log_dir": str(LOG_DIR),
             "log_retention_days": LOG_RETENTION_DAYS,

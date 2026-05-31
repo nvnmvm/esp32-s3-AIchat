@@ -23,7 +23,11 @@ def parse_args() -> argparse.Namespace:
         default=Path("runtime/session/录音转文字"),
         help="Directory for the transcript txt file",
     )
-    parser.add_argument("--provider", choices=["vosk", "phase2", "auto"], help="Override ASR_PROVIDER")
+    parser.add_argument(
+        "--provider",
+        choices=["auto", "configured_asr", "qwen_dashscope", "openai_multimodal", "vosk", "phase2"],
+        help="Override ASR_PROVIDER",
+    )
     return parser.parse_args()
 
 

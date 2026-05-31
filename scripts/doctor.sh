@@ -32,6 +32,8 @@ check_project_files() {
   [ -d "$PROJECT_DIR" ] || fail "Project directory not found: $PROJECT_DIR"
   [ -f "$PROJECT_DIR/docker-compose.yml" ] || fail "docker-compose.yml not found in $PROJECT_DIR"
   [ -f "$PROJECT_DIR/.env" ] || warn ".env not found in $PROJECT_DIR"
+  [ -f "$PROJECT_DIR/scripts/model_config_cli.py" ] || fail "model_config_cli.py not found"
+  [ -f "$PROJECT_DIR/scripts/inspect_wav.py" ] || fail "inspect_wav.py not found"
   ok "Project directory looks valid: $PROJECT_DIR"
 }
 
@@ -42,7 +44,6 @@ check_container() {
 
 check_health() {
   local attempt
-
   for attempt in 1 2 3 4 5; do
     if curl -fsS "http://127.0.0.1:${PORT}/health" >/tmp/esp32-ai-health.json; then
       ok "Local health endpoint is reachable: http://127.0.0.1:${PORT}/health"
@@ -50,11 +51,9 @@ check_health() {
       echo
       return
     fi
-
     warn "Health endpoint is not ready yet; retry ${attempt}/5"
     sleep 2
   done
-
   fail "Local health endpoint is not reachable: http://127.0.0.1:${PORT}/health"
 }
 
@@ -74,18 +73,15 @@ check_firewall() {
   if command -v ufw >/dev/null 2>&1; then
     ufw status || true
   fi
-
   if command -v firewall-cmd >/dev/null 2>&1; then
     firewall-cmd --state >/dev/null 2>&1 && firewall-cmd --list-ports || true
   fi
-
   warn "Cloud provider security groups cannot be checked from inside the VPS. Open TCP ${PORT} in the provider console."
 }
 
 check_resources() {
   local avail_kb
   local swap_total_kb
-
   if command -v df >/dev/null 2>&1; then
     avail_kb="$(df -Pk "$PROJECT_DIR" 2>/dev/null | awk 'NR == 2 { print $4 }')"
     if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 1048576 ]; then
@@ -94,7 +90,6 @@ check_resources() {
       ok "Disk space near $PROJECT_DIR is acceptable"
     fi
   fi
-
   if command -v free >/dev/null 2>&1; then
     swap_total_kb="$(free -k | awk '$1 == "Swap:" { print $2 }')"
     if [ -z "$swap_total_kb" ] || [ "$swap_total_kb" -eq 0 ]; then
@@ -110,13 +105,28 @@ check_session_config() {
   echo "Recordings: ${SESSION_RECORDINGS_DIR:-runtime/session/录音}"
   echo "Transcripts: ${SESSION_TRANSCRIPTS_DIR:-runtime/session/录音转文字}"
   echo "Answers: ${SESSION_ANSWERS_DIR:-runtime/session/ai回答的文本}"
-  echo "Session retention days: ${SESSION_RETENTION_DAYS:-1}"
-  echo "ASR provider: ${ASR_PROVIDER:-vosk}"
+  echo "Audio reports: ${SESSION_AUDIO_REPORT_DIR:-runtime/session/audio_report}"
+  echo "Session retention days: ${SESSION_RETENTION_DAYS:-3}"
+  echo "Model config: ${MODEL_CONFIG_PATH:-runtime/config/models.json}"
+  echo "ASR provider: ${ASR_PROVIDER:-auto}"
+  echo "ASR primary: ${ASR_PRIMARY:-configured_asr}"
+  echo "ASR fallback: ${ASR_FALLBACK:-vosk}"
   echo "TTS provider: ${TTS_PROVIDER:-edge}"
-  echo "LLM provider: ${LLM_PROVIDER:-phase3}"
-
-  if [ "${ASR_PROVIDER:-vosk}" = "vosk" ]; then
+  echo "LLM provider: ${LLM_PROVIDER:-auto}"
+  if [ "${ASR_FALLBACK:-vosk}" = "vosk" ] || [ "${ASR_PROVIDER:-auto}" = "vosk" ]; then
     echo "Vosk model dir: ${VOSK_MODEL_DIR:-runtime/models/vosk-model-small-cn-0.22}"
+  fi
+  local model_config="${MODEL_CONFIG_PATH:-runtime/config/models.json}"
+  case "$model_config" in
+    /*) ;;
+    *) model_config="$PROJECT_DIR/$model_config" ;;
+  esac
+  if [ -f "$model_config" ]; then
+    if command -v python3 >/dev/null 2>&1; then
+      python3 "$PROJECT_DIR/scripts/model_config_cli.py" --config "$model_config" list || true
+    fi
+  else
+    warn "Model config file not found yet. Use manage.sh > Large model brands to add one."
   fi
 }
 

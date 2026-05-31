@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "active_llm_id": "llm-001",
+  "active_asr_id": "asr-001",
+  "llm_models": [
+    {
+      "id": "llm-001",
+      "brand": "deepseek",
+      "provider": "openai_compatible",
+      "name": "DeepSeek Chat",
+      "base_url": "https://api.deepseek.com",
+      "api_key": "replace-with-your-api-key",
+      "model": "deepseek-chat",
+      "enabled": true
+    }
+  ],
+  "asr_models": [
+    {
+      "id": "asr-001",
+      "brand": "qwen",
+      "provider": "qwen_dashscope",
+      "name": "Qwen3 ASR Flash",
+      "base_http_api_url": "https://dashscope.aliyuncs.com/api/v1",
+      "api_key": "replace-with-your-dashscope-api-key",
+      "model": "qwen3-asr-flash",
+      "language": "zh",
+      "enable_itn": true,
+      "enabled": true
+    }
+  ]
+}
