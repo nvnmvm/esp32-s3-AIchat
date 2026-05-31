@@ -82,12 +82,52 @@ check_firewall() {
   warn "Cloud provider security groups cannot be checked from inside the VPS. Open TCP ${PORT} in the provider console."
 }
 
+check_resources() {
+  local avail_kb
+  local swap_total_kb
+
+  if command -v df >/dev/null 2>&1; then
+    avail_kb="$(df -Pk "$PROJECT_DIR" 2>/dev/null | awk 'NR == 2 { print $4 }')"
+    if [ -n "$avail_kb" ] && [ "$avail_kb" -lt 1048576 ]; then
+      warn "Less than 1 GiB free near $PROJECT_DIR. Vosk model download and Docker rebuilds may fail."
+    else
+      ok "Disk space near $PROJECT_DIR is acceptable"
+    fi
+  fi
+
+  if command -v free >/dev/null 2>&1; then
+    swap_total_kb="$(free -k | awk '$1 == "Swap:" { print $2 }')"
+    if [ -z "$swap_total_kb" ] || [ "$swap_total_kb" -eq 0 ]; then
+      warn "No swap is configured. A 1C1G VPS should add about 1 GiB swap for Vosk/model downloads."
+    else
+      ok "Swap is configured"
+    fi
+  fi
+}
+
+check_session_config() {
+  echo "Session root: ${SESSION_DIR:-runtime/session}"
+  echo "Recordings: ${SESSION_RECORDINGS_DIR:-runtime/session/录音}"
+  echo "Transcripts: ${SESSION_TRANSCRIPTS_DIR:-runtime/session/录音转文字}"
+  echo "Answers: ${SESSION_ANSWERS_DIR:-runtime/session/ai回答的文本}"
+  echo "Session retention days: ${SESSION_RETENTION_DAYS:-1}"
+  echo "ASR provider: ${ASR_PROVIDER:-vosk}"
+  echo "TTS provider: ${TTS_PROVIDER:-edge}"
+  echo "LLM provider: ${LLM_PROVIDER:-phase3}"
+
+  if [ "${ASR_PROVIDER:-vosk}" = "vosk" ]; then
+    echo "Vosk model dir: ${VOSK_MODEL_DIR:-runtime/models/vosk-model-small-cn-0.22}"
+  fi
+}
+
 main() {
   check_command docker
   docker compose version >/dev/null 2>&1 || fail "Docker Compose plugin is not installed"
   ok "Docker Compose plugin is installed"
   check_command curl
   check_project_files
+  check_resources
+  check_session_config
   check_container
   check_health
   check_port

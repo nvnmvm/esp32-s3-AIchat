@@ -1,8 +1,8 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v2.1.3-phase2-stable`，阶段二稳定收尾版。
+当前版本：`v3.0.0-phase3-session-voice`，阶段三 session 文件化语音助手版。
 
-本仓库是 VPS 云端服务。阶段二接收 ESP32-S3 上传的 PCM 音频，返回识别文本、回答文本和可播放 PCM 音频，用于验证 OLED 显示和 MAX98357A 播放闭环。
+本仓库是 VPS 云端服务。阶段三接收 ESP32-S3 上传的 PCM 音频，保存录音到 session 文件夹，使用 ASR 转文字，调用 AI API 生成回答并保存文本，再把回答文本和 TTS PCM 音频返回给 ESP32，用于 OLED 右向左滚动显示和 MAX98357A 播放。
 
 ## 配套仓库
 
@@ -13,12 +13,13 @@
 
 - 阶段一：`docs/README-phase-1.md`
 - 阶段二：`docs/README-phase-2.md`
+- 阶段三：`docs/README-phase-3.md`
 
 每个阶段都通过 tag 和 GitHub Release 固定版本，后续阶段不覆盖前一阶段说明。
 
-## VPS 阶段二部署
+## VPS 阶段三部署
 
-阶段二测试前需要先删除阶段一旧部署，再部署阶段二代码。推荐使用 `--clean`：
+阶段三测试前建议先备份旧 `.env` 和 `runtime/`，再部署阶段三代码。首次完整重装可使用 `--clean`：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nvnmvm/esp32-s3-AIchat/main/install.sh -o install.sh && sudo bash install.sh --repo https://github.com/nvnmvm/esp32-s3-AIchat.git --clean
@@ -84,11 +85,13 @@ cd /opt/esp32-ai-voice-cloud
 sudo bash manage.sh
 ```
 
-菜单支持查看配置、随机或手动修改 WebSocket 令牌、修改 WebSocket 端口、修改 AI API Key、查看状态、日志二级菜单、停止/启动/重启 WebSocket 服务、卸载服务、一键更新。更新分为“保留数据更新”和“不保留运行数据更新”；当前 `v2.1.3-phase2-stable` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2` 和 `v2.1.x` 保留 `.env` 与 `runtime/` 更新，其他跨度会在菜单中提示先备份或改用不保留运行数据更新。
+菜单支持查看配置、随机或手动修改 WebSocket 令牌、修改 WebSocket 端口、修改 AI API Key、查看状态、日志二级菜单、session 文件保留时间、停止/启动/重启 WebSocket 服务、卸载服务、一键更新。更新分为“保留数据更新”和“不保留运行数据更新”；当前 `v3.0.0-phase3-session-voice` 支持从 `v2.0.1-phase2`、`v2.0.2-phase2`、`v2.1.x` 和 `v3.x` 保留 `.env` 与 `runtime/` 更新，其他跨度会在菜单中提示先备份或改用不保留运行数据更新。
 
 日志二级菜单包含：日志保留时间、实时日志、关闭日志、开启日志。日志保留时间里可以选择保留 7 天、3 天或 1 天；默认保留 7 天，旧日志会自动清理，避免长期占用 VPS 空间。
 
-## 阶段二 WebSocket 协议
+session 文件保留菜单可以选择保留 1 天、3 天、7 天或 30 天；默认 1 天，旧录音、转写文本和 AI 回答文本会自动清理。
+
+## 阶段三 WebSocket 协议
 
 ESP32-S3 到云端：
 
@@ -115,8 +118,8 @@ ESP32-S3 到云端：
 
 ```json
 {"type":"status","text":"录音中...","state":"recording"}
-{"type":"asr_text","text":"阶段二测试音频已收到..."}
-{"type":"answer_text","text":"阶段二闭环已完成..."}
+{"type":"asr_text","text":"今天上海天气怎么样","transcript_file":"...txt"}
+{"type":"answer_text","text":"今天上海天气...","answer_file":"...txt","answer_chars":120,"truncated":false}
 {"type":"audio_start","sample_rate":16000,"format":"pcm_s16le"}
 ```
 
@@ -128,7 +131,7 @@ ESP32-S3 到云端：
 
 ## 配置
 
-`.env.example` 包含阶段二默认值：
+`.env.example` 包含阶段三默认值：
 
 ```env
 SERVER_PORT=8000
@@ -150,24 +153,39 @@ VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
-ASR_PROVIDER=phase2
-LLM_PROVIDER=phase2
-TTS_PROVIDER=tone
+ASR_PROVIDER=vosk
+LLM_PROVIDER=phase3
+TTS_PROVIDER=edge
 DEEPSEEK_API_KEY=
 DEEPSEEK_API_BASE=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
+AI_API_BASE=https://api.deepseek.com
+AI_MODEL=deepseek-chat
 LLM_TIMEOUT_SECONDS=30
+TTS_TIMEOUT_SECONDS=45
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
-CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.3-phase2-stable
+SESSION_DIR=runtime/session
+SESSION_RECORDINGS_DIR=runtime/session/录音
+SESSION_TRANSCRIPTS_DIR=runtime/session/录音转文字
+SESSION_ANSWERS_DIR=runtime/session/ai回答的文本
+SESSION_RETENTION_DAYS=1
+CONVERSATION_DIR=runtime/session/录音转文字
+VOSK_MODEL_DIR=runtime/models/vosk-model-small-cn-0.22
+VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
+VOSK_AUTO_DOWNLOAD=true
+EDGE_TTS_VOICE=zh-CN-XiaoxiaoNeural
+FFMPEG_BIN=ffmpeg
+ANSWER_MAX_CHARS=800
+TTS_MAX_CHARS=500
+APP_VERSION=v3.0.0-phase3-session-voice
 ```
 
-阶段二会把本轮语音解析文本写入 `CONVERSATION_DIR` 下的临时文本文件，回复逻辑读取该文件后立即删除，不保留历史上下文。`SAVE_DEBUG_WAV=true` 时会把每轮录音保存到 `DEBUG_AUDIO_DIR`，用于排查麦克风/I2S 问题。默认 ASR/TTS 是阶段二测试实现；`LLM_PROVIDER=deepseek` 且配置 `DEEPSEEK_API_KEY` 后会调用 DeepSeek 普通非流式接口。
+阶段三会把本轮录音、语音转文字和 AI 回答分别写入 session 的三个子目录，并按 `SESSION_RETENTION_DAYS` 自动清理。默认 ASR 是 Vosk small 中文模型，默认 TTS 是 edge-tts + miniaudio 转 PCM；`LLM_PROVIDER=deepseek` 且配置 `DEEPSEEK_API_KEY` 或 `AI_API_KEY` 后会调用 DeepSeek/OpenAI-compatible 普通非流式接口。
 
 ## 配套固件
 
-推荐使用配套固件版本：[v2.1.2-display-stable](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.2-display-stable)。本次 `v2.1.3` 会忽略录音结束后的残余 PCM 包，避免把无害尾包发成云端错误；固件 `v2.1.2` 同步加入兼容保护，避免旧云端错误卡住 OLED。
+推荐使用配套固件版本：[v2.1.2-display-stable](https://github.com/nvnmvm/esp32-s3-AIchat-firmware/releases/tag/v2.1.2-display-stable) 或本仓库同步阶段三固件。阶段三保持原 JSON + PCM WebSocket 协议，固件已能滚动显示 `answer_text` 并播放 `audio_start` 后的 PCM 音频。
 
 ## 本地测试
 
@@ -179,5 +197,5 @@ pytest -q
 Docker 构建：
 
 ```bash
-docker build -t esp32-ai-voice-cloud:phase2 .
+docker build -t esp32-ai-voice-cloud:phase3 .
 ```

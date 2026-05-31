@@ -1,2 +1,5 @@
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
+vosk==0.3.45
+edge-tts==7.2.8
+miniaudio==1.71

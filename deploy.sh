@@ -172,7 +172,7 @@ print_version_summary() {
   fi
 
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v2.1.2-phase2-complete"
+  echo "Configured APP_VERSION: v3.0.0-phase3-session-voice"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -192,7 +192,7 @@ main() {
   if [ -n "$ai_api_key" ]; then
     llm_provider="deepseek"
   else
-    llm_provider="phase2"
+    llm_provider="phase3"
   fi
 
   check_firewall "$server_port"
@@ -217,17 +217,32 @@ VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
-ASR_PROVIDER=phase2
+ASR_PROVIDER=vosk
 LLM_PROVIDER=$llm_provider
-TTS_PROVIDER=tone
+TTS_PROVIDER=edge
 DEEPSEEK_API_KEY=$ai_api_key
 DEEPSEEK_API_BASE=https://api.deepseek.com
 DEEPSEEK_MODEL=deepseek-chat
+AI_API_BASE=https://api.deepseek.com
+AI_MODEL=deepseek-chat
 LLM_TIMEOUT_SECONDS=30
+TTS_TIMEOUT_SECONDS=45
 SAVE_DEBUG_WAV=false
 DEBUG_AUDIO_DIR=runtime/audio
-CONVERSATION_DIR=runtime/conversations
-APP_VERSION=v2.1.2-phase2-complete
+SESSION_DIR=runtime/session
+SESSION_RECORDINGS_DIR=runtime/session/录音
+SESSION_TRANSCRIPTS_DIR=runtime/session/录音转文字
+SESSION_ANSWERS_DIR=runtime/session/ai回答的文本
+SESSION_RETENTION_DAYS=1
+CONVERSATION_DIR=runtime/session/录音转文字
+VOSK_MODEL_DIR=runtime/models/vosk-model-small-cn-0.22
+VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
+VOSK_AUTO_DOWNLOAD=true
+EDGE_TTS_VOICE=zh-CN-XiaoxiaoNeural
+FFMPEG_BIN=ffmpeg
+ANSWER_MAX_CHARS=800
+TTS_MAX_CHARS=500
+APP_VERSION=v3.0.0-phase3-session-voice
 EOF
 
   cd "$PROJECT_DIR"
@@ -247,7 +262,7 @@ EOF
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
-  echo "Phase 2 audio format: PCM s16le, 16000 Hz, mono"
+  echo "Phase 3 audio format: PCM s16le, 16000 Hz, mono"
   echo
   echo "=== VPS common commands ==="
   echo "Cloud config file: $ENV_FILE"

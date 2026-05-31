@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
-LATEST_VERSION="v2.1.3-phase2-stable"
+LATEST_VERSION="v3.0.0-phase3-session-voice"
 
 need_env() {
   if [ ! -f "$ENV_FILE" ]; then
@@ -114,12 +114,19 @@ show_config() {
   else
     echo "AI_API_KEY=<empty>"
   fi
-  echo "LLM_PROVIDER=${LLM_PROVIDER:-phase2}"
-  echo "ASR_PROVIDER=${ASR_PROVIDER:-phase2}"
-  echo "TTS_PROVIDER=${TTS_PROVIDER:-tone}"
+  echo "LLM_PROVIDER=${LLM_PROVIDER:-phase3}"
+  echo "ASR_PROVIDER=${ASR_PROVIDER:-vosk}"
+  echo "TTS_PROVIDER=${TTS_PROVIDER:-edge}"
   echo "SAVE_DEBUG_WAV=${SAVE_DEBUG_WAV:-false}"
-  echo "CONVERSATION_DIR=${CONVERSATION_DIR:-runtime/conversations}"
+  echo "SESSION_DIR=${SESSION_DIR:-runtime/session}"
+  echo "SESSION_RECORDINGS_DIR=${SESSION_RECORDINGS_DIR:-runtime/session/录音}"
+  echo "SESSION_TRANSCRIPTS_DIR=${SESSION_TRANSCRIPTS_DIR:-runtime/session/录音转文字}"
+  echo "SESSION_ANSWERS_DIR=${SESSION_ANSWERS_DIR:-runtime/session/ai回答的文本}"
+  echo "SESSION_RETENTION_DAYS=${SESSION_RETENTION_DAYS:-1}"
+  echo "CONVERSATION_DIR=${CONVERSATION_DIR:-runtime/session/录音转文字}"
   echo "DEBUG_AUDIO_DIR=${DEBUG_AUDIO_DIR:-runtime/audio}"
+  echo "VOSK_MODEL_DIR=${VOSK_MODEL_DIR:-runtime/models/vosk-model-small-cn-0.22}"
+  echo "EDGE_TTS_VOICE=${EDGE_TTS_VOICE:-zh-CN-XiaoxiaoNeural}"
   echo "LOG_LEVEL=${LOG_LEVEL:-INFO}"
   echo "LOG_PAYLOADS=${LOG_PAYLOADS:-false}"
   echo "LOG_TO_FILE=${LOG_TO_FILE:-true}"
@@ -173,7 +180,7 @@ change_ai_key() {
   if [ -n "$api_key" ]; then
     set_env_value LLM_PROVIDER "deepseek"
   else
-    set_env_value LLM_PROVIDER "phase2"
+    set_env_value LLM_PROVIDER "phase3"
   fi
   compose_up
   echo "AI API key updated."
@@ -281,6 +288,41 @@ logs_menu() {
   done
 }
 
+set_session_retention_days() {
+  local days="$1"
+  set_env_value SESSION_RETENTION_DAYS "$days"
+  compose_up
+  echo "Session file retention updated to ${days} day(s)."
+}
+
+session_menu() {
+  while true; do
+    load_env
+    echo
+    echo "Session Files"
+    echo "Root: ${SESSION_DIR:-runtime/session}"
+    echo "Recordings: ${SESSION_RECORDINGS_DIR:-runtime/session/录音}"
+    echo "Transcripts: ${SESSION_TRANSCRIPTS_DIR:-runtime/session/录音转文字}"
+    echo "Answers: ${SESSION_ANSWERS_DIR:-runtime/session/ai回答的文本}"
+    echo "Retention: ${SESSION_RETENTION_DAYS:-1} day(s)"
+    echo "1) Keep 1 day"
+    echo "2) Keep 3 days"
+    echo "3) Keep 7 days"
+    echo "4) Keep 30 days"
+    echo "0) Back"
+    read -r -p "Select: " choice
+
+    case "$choice" in
+      1) set_session_retention_days 1 ;;
+      2) set_session_retention_days 3 ;;
+      3) set_session_retention_days 7 ;;
+      4) set_session_retention_days 30 ;;
+      0) return ;;
+      *) echo "Unknown option." >&2 ;;
+    esac
+  done
+}
+
 run_doctor() {
   bash "$PROJECT_DIR/scripts/doctor.sh"
 }
@@ -288,7 +330,7 @@ run_doctor() {
 can_preserve_update() {
   local version="${APP_VERSION:-}"
   case "$version" in
-    v2.0.1-phase2|v2.0.2-phase2|v2.1.*)
+    v2.0.1-phase2|v2.0.2-phase2|v2.1.*|v3.*)
       return 0
       ;;
     *)
@@ -393,6 +435,7 @@ menu() {
     echo "11) Update, preserve data"
     echo "12) Update, remove runtime data"
     echo "13) Uninstall WebSocket service"
+    echo "14) Session file retention"
     echo "0) Exit"
     read -r -p "Select: " choice
 
@@ -410,6 +453,7 @@ menu() {
       11) update_preserve_data ;;
       12) update_clean_data ;;
       13) uninstall_service ;;
+      14) session_menu ;;
       0) exit 0 ;;
       *) echo "Unknown option." >&2 ;;
     esac

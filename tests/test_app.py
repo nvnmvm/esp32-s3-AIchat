@@ -1,11 +1,13 @@
 import asyncio
 import json
 import logging
+import os
 import struct
+import time
 
 from fastapi.testclient import TestClient
 
-from app.main import VoiceSession, app, handle_binary_message
+from app.main import VoiceSession, app, cleanup_old_session_files, handle_binary_message
 
 
 client = TestClient(app)
@@ -15,20 +17,24 @@ def receive_json(websocket):
     return json.loads(websocket.receive_text())
 
 
-def test_health_reports_phase2_state():
+def test_health_reports_phase3_state():
     response = client.get("/health")
 
     assert response.status_code == 200
     data = response.json()
     assert data["ok"] is True
     assert data["service"] == "esp32-ai-voice-cloud"
-    assert data["phase"] == "voice-screen-loopback"
+    assert data["phase"] == "session-asr-ai-tts"
     assert data["token_required"] is True
     assert data["audio"]["sample_rate"] == 16000
-    assert data["tts_mode"] == "local-test-tone"
-    assert data["conversation_storage"] == "per-turn-file-auto-delete"
+    assert data["tts_mode"] == "edge"
+    assert data["conversation_storage"] == "session-files-retention-cleanup"
+    assert data["session_retention_days"] == 1
+    assert "recordings" in data["session_dirs"]
+    assert "transcripts" in data["session_dirs"]
+    assert "answers" in data["session_dirs"]
     assert data["save_debug_wav"] is False
-    assert data["llm_provider"] == "phase2"
+    assert data["llm_provider"] == "phase3"
 
 
 def test_websocket_rejects_missing_token():
@@ -39,7 +45,7 @@ def test_websocket_rejects_missing_token():
         assert "1008" in str(exc) or "WebSocketDisconnect" in exc.__class__.__name__
 
 
-def test_websocket_accepts_phase2_ping(monkeypatch):
+def test_websocket_accepts_phase3_ping(monkeypatch):
     monkeypatch.setattr("app.main.WS_TOKEN", "test-token")
 
     with client.websocket_connect("/ws?token=test-token&device_id=test-device") as websocket:
@@ -56,7 +62,13 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
     monkeypatch.setattr("app.main.VAD_MIN_RECORDING_BYTES", 256)
     monkeypatch.setattr("app.main.VAD_SILENCE_CHUNKS", 2)
     monkeypatch.setattr("app.main.MOCK_TTS_DURATION_MS", 50)
-    monkeypatch.setattr("app.main.CONVERSATION_DIR", tmp_path / "conversations")
+    monkeypatch.setattr("app.main.ASR_PROVIDER", "phase2")
+    monkeypatch.setattr("app.main.LLM_PROVIDER", "phase3")
+    monkeypatch.setattr("app.main.TTS_PROVIDER", "tone")
+    monkeypatch.setattr("app.main.SESSION_RECORDINGS_DIR", tmp_path / "session" / "录音")
+    monkeypatch.setattr("app.main.SESSION_TRANSCRIPTS_DIR", tmp_path / "session" / "录音转文字")
+    monkeypatch.setattr("app.main.SESSION_ANSWERS_DIR", tmp_path / "session" / "ai回答的文本")
+    monkeypatch.setattr("app.main.CONVERSATION_DIR", tmp_path / "session" / "录音转文字")
     monkeypatch.setattr("app.main.DEBUG_AUDIO_DIR", tmp_path / "audio")
     monkeypatch.setattr("app.main.SAVE_DEBUG_WAV", True)
 
@@ -92,9 +104,39 @@ def test_websocket_voice_turn_returns_text_and_audio(monkeypatch, tmp_path):
         assert "audio_start" in seen_types
         assert "audio_end" in seen_types
         assert got_audio is True
-        assert "本轮文本文件已在回复后自动清理" in answer_text
-        assert list((tmp_path / "conversations").glob("*.txt")) == []
+        assert "阶段三会话链路已跑通" in answer_text
+        assert len(list((tmp_path / "session" / "录音").glob("*.wav"))) == 1
+        assert len(list((tmp_path / "session" / "录音转文字").glob("*.txt"))) == 1
+        assert len(list((tmp_path / "session" / "ai回答的文本").glob("*.txt"))) == 1
         assert len(list((tmp_path / "audio").glob("*.wav"))) == 1
+
+
+def test_session_retention_cleanup_removes_old_files(monkeypatch, tmp_path):
+    recordings_dir = tmp_path / "session" / "录音"
+    transcripts_dir = tmp_path / "session" / "录音转文字"
+    answers_dir = tmp_path / "session" / "ai回答的文本"
+    monkeypatch.setattr("app.main.SESSION_RECORDINGS_DIR", recordings_dir)
+    monkeypatch.setattr("app.main.SESSION_TRANSCRIPTS_DIR", transcripts_dir)
+    monkeypatch.setattr("app.main.SESSION_ANSWERS_DIR", answers_dir)
+    monkeypatch.setattr("app.main.SESSION_RETENTION_DAYS", 1)
+
+    old_timestamp = time.time() - (2 * 86400)
+    recent_paths = []
+    old_paths = []
+    for directory in (recordings_dir, transcripts_dir, answers_dir):
+        directory.mkdir(parents=True)
+        recent_path = directory / "recent.txt"
+        old_path = directory / "old.txt"
+        recent_path.write_text("recent", encoding="utf-8")
+        old_path.write_text("old", encoding="utf-8")
+        os.utime(old_path, (old_timestamp, old_timestamp))
+        recent_paths.append(recent_path)
+        old_paths.append(old_path)
+
+    cleanup_old_session_files()
+
+    assert all(path.exists() for path in recent_paths)
+    assert all(not path.exists() for path in old_paths)
 
 
 def test_stray_audio_after_recording_is_ignored(caplog):
