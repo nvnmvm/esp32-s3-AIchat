@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+MSG_main_title="ESP32-S3 AI 对话云端管理"
+MSG_dashboard="仪表盘"
+MSG_models_voice="模型与语音"
+MSG_service_control="服务控制"
+MSG_logs_diag="日志与诊断"
+MSG_data_storage="数据与存储"
+MSG_network_security="网络与安全"
+MSG_language="语言"
+MSG_maintenance="更新与卸载"
+MSG_exit="退出"
+MSG_back="返回"
+MSG_select="请选择"
+MSG_unknown_option="未知选项。"
+MSG_llm_label="LLM 对话模型（AI 对话模型）"
+MSG_asr_label="ASR 语音识别模型"

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,13 @@ DEFAULT_PATH = Path("runtime/config/models.json")
 
 
 def empty_config() -> dict[str, Any]:
-    return {"version": 1, "active_llm_id": "", "active_asr_id": "", "llm_models": [], "asr_models": []}
+    return {
+        "version": 2,
+        "active_llm_id": "",
+        "active_asr_id": "",
+        "llm_models": [],
+        "asr_models": [],
+    }
 
 
 def load(path: Path) -> dict[str, Any]:
@@ -22,6 +29,10 @@ def load(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     cfg = empty_config()
     cfg.update(data)
+    try:
+        cfg["version"] = max(int(cfg.get("version") or 1), 2)
+    except (TypeError, ValueError):
+        cfg["version"] = 2
     cfg["llm_models"] = [item for item in cfg.get("llm_models", []) if isinstance(item, dict)]
     cfg["asr_models"] = [item for item in cfg.get("asr_models", []) if isinstance(item, dict)]
     return cfg
@@ -54,6 +65,10 @@ def mask_key(value: str) -> str:
     return value[:4] + "..." + value[-4:]
 
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
 def cmd_list(args: argparse.Namespace) -> None:
     cfg = load(args.config)
     print(f"Config: {args.config}")
@@ -62,13 +77,16 @@ def cmd_list(args: argparse.Namespace) -> None:
         active = "*" if item.get("id") == cfg.get("active_llm_id") else " "
         print(
             f"{active} {item.get('id')} LLM brand={item.get('brand')} "
-            f"model={item.get('model')} base_url={item.get('base_url')} key={mask_key(str(item.get('api_key') or ''))}"
+            f"name={item.get('name')} remark={item.get('remark', '')} "
+            f"model={item.get('model')} base_url={item.get('base_url')} "
+            f"key={mask_key(str(item.get('api_key') or ''))}"
         )
     print(f"Active ASR: {cfg.get('active_asr_id') or '<none>'}")
     for item in cfg["asr_models"]:
         active = "*" if item.get("id") == cfg.get("active_asr_id") else " "
         print(
             f"{active} {item.get('id')} ASR provider={item.get('provider')} brand={item.get('brand')} "
+            f"name={item.get('name')} remark={item.get('remark', '')} "
             f"model={item.get('model')} key={mask_key(str(item.get('api_key') or ''))}"
         )
 
@@ -81,10 +99,12 @@ def cmd_add_llm(args: argparse.Namespace) -> None:
         "brand": args.brand,
         "provider": "openai_compatible",
         "name": args.name or f"{args.brand}-{args.model}",
+        "remark": args.remark or args.name or "",
         "base_url": args.base_url,
         "api_key": args.api_key,
         "model": args.model,
         "enabled": True,
+        "updated_at": utc_now(),
     }
     cfg["llm_models"] = [item for item in cfg["llm_models"] if item.get("id") != item_id]
     cfg["llm_models"].append(item)
@@ -102,6 +122,7 @@ def cmd_add_asr(args: argparse.Namespace) -> None:
         "brand": args.brand,
         "provider": args.provider,
         "name": args.name or f"{args.brand}-{args.model}",
+        "remark": args.remark or args.name or "",
         "base_url": args.base_url,
         "base_http_api_url": args.base_http_api_url,
         "api_key": args.api_key,
@@ -109,6 +130,7 @@ def cmd_add_asr(args: argparse.Namespace) -> None:
         "language": args.language,
         "enable_itn": args.enable_itn,
         "enabled": True,
+        "updated_at": utc_now(),
     }
     cfg["asr_models"] = [item for item in cfg["asr_models"] if item.get("id") != item_id]
     cfg["asr_models"].append(item)
@@ -154,6 +176,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_llm.add_argument("--id")
     add_llm.add_argument("--brand", required=True)
     add_llm.add_argument("--name")
+    add_llm.add_argument("--remark", default="")
     add_llm.add_argument("--base-url", required=True)
     add_llm.add_argument("--api-key", required=True)
     add_llm.add_argument("--model", required=True)
@@ -163,8 +186,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_asr = sub.add_parser("add-asr")
     add_asr.add_argument("--id")
     add_asr.add_argument("--brand", required=True)
-    add_asr.add_argument("--provider", choices=["qwen_dashscope", "openai_multimodal"], required=True)
+    add_asr.add_argument("--provider", required=True)
     add_asr.add_argument("--name")
+    add_asr.add_argument("--remark", default="")
     add_asr.add_argument("--base-url", default="")
     add_asr.add_argument("--base-http-api-url", default="https://dashscope.aliyuncs.com/api/v1")
     add_asr.add_argument("--api-key", required=True)

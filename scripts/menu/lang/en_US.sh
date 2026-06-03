@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+
+MSG_main_title="ESP32-S3 AI Chat Cloud Management"
+MSG_dashboard="Dashboard"
+MSG_models_voice="Models & Voice"
+MSG_service_control="Service Control"
+MSG_logs_diag="Logs & Diagnostics"
+MSG_data_storage="Data & Storage"
+MSG_network_security="Network & Security"
+MSG_language="Language"
+MSG_maintenance="Maintenance"
+MSG_exit="Exit"
+MSG_back="Back"
+MSG_select="Select"
+MSG_unknown_option="Unknown option."
+MSG_llm_label="LLM Dialogue Model (AI Dialogue Model)"
+MSG_asr_label="ASR Speech Recognition Model"

@@ -3,14 +3,18 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
+MENU_DIR="$PROJECT_DIR/scripts/menu"
 
-random_token() {
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -hex 24
-  else
-    date +%s%N | sha256sum | awk '{print $1}'
-  fi
-}
+# shellcheck source=scripts/menu/env.sh
+. "$MENU_DIR/env.sh"
+# shellcheck source=scripts/menu/ui.sh
+. "$MENU_DIR/ui.sh"
+# shellcheck source=scripts/menu/i18n.sh
+. "$MENU_DIR/i18n.sh"
+# shellcheck source=scripts/menu/docker.sh
+. "$MENU_DIR/docker.sh"
+# shellcheck source=scripts/menu/models.sh
+. "$MENU_DIR/models.sh"
 
 load_existing_env() {
   if [ -f "$ENV_FILE" ]; then
@@ -62,13 +66,7 @@ read_port() {
   local port
   read -r -p "Enter WebSocket server port [${default_port}]: " port
   port="${port:-$default_port}"
-  case "$port" in
-    ''|*[!0-9]*) echo "Port must be a number." >&2; exit 1 ;;
-  esac
-  if [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
-    echo "Port must be between 1 and 65535." >&2
-    exit 1
-  fi
+  validate_port "$port" || { echo "Port must be between 1 and 65535." >&2; exit 1; }
   printf '%s' "$port"
 }
 
@@ -79,143 +77,6 @@ read_ai_api_key() {
     api_key="${AI_API_KEY:-}"
   fi
   printf '%s' "$api_key"
-}
-
-python_bin() {
-  if command -v python3 >/dev/null 2>&1; then
-    printf '%s' "python3"
-    return
-  fi
-  if command -v python >/dev/null 2>&1; then
-    printf '%s' "python"
-    return
-  fi
-  return 1
-}
-
-run_model_cli() {
-  local py config_path
-  py="$(python_bin)" || {
-    echo "python3 is not available; skipped model config setup." >&2
-    return 1
-  }
-  config_path="${MODEL_CONFIG_PATH:-runtime/config/models.json}"
-  case "$config_path" in
-    /*) ;;
-    *) config_path="$PROJECT_DIR/$config_path" ;;
-  esac
-  "$py" "$PROJECT_DIR/scripts/model_config_cli.py" --config "$config_path" "$@"
-}
-
-add_llm_model_interactive() {
-  local choice brand base_url default_model model api_key
-  echo
-  echo "Choose LLM brand:"
-  echo "1) DeepSeek"
-  echo "2) Qwen / Alibaba Cloud Model Studio"
-  echo "3) Doubao / Volcengine Ark"
-  echo "4) OpenAI-compatible custom"
-  read -r -p "Select [1]: " choice
-  choice="${choice:-1}"
-  case "$choice" in
-    1) brand="deepseek"; base_url="https://api.deepseek.com"; default_model="deepseek-chat" ;;
-    2) brand="qwen"; base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"; default_model="qwen-flash" ;;
-    3) brand="doubao"; base_url="https://ark.cn-beijing.volces.com/api/v3"; default_model="doubao-1-5-pro-32k-250115" ;;
-    4)
-      read -r -p "Brand name: " brand
-      read -r -p "OpenAI-compatible base URL: " base_url
-      default_model=""
-      ;;
-    *) echo "Unknown brand." >&2; return 1 ;;
-  esac
-  read -r -p "API key: " api_key
-  [ -n "$api_key" ] || { echo "API key cannot be empty." >&2; return 1; }
-  read -r -p "Model name [${default_model}]: " model
-  model="${model:-$default_model}"
-  [ -n "$model" ] || { echo "Model name cannot be empty." >&2; return 1; }
-  run_model_cli add-llm --brand "$brand" --base-url "$base_url" --api-key "$api_key" --model "$model" --activate >/dev/null
-  echo "Added and activated LLM model: ${brand}/${model}"
-}
-
-add_asr_model_interactive() {
-  local choice brand provider base_http_api_url base_url default_model model api_key language
-  echo
-  echo "Choose ASR model source:"
-  echo "1) Qwen DashScope ASR (recommended for 3.0.1)"
-  echo "2) OpenAI-compatible multimodal model"
-  read -r -p "Select [1]: " choice
-  choice="${choice:-1}"
-  case "$choice" in
-    1)
-      brand="qwen"
-      provider="qwen_dashscope"
-      base_http_api_url="https://dashscope.aliyuncs.com/api/v1"
-      base_url=""
-      default_model="qwen3-asr-flash"
-      ;;
-    2)
-      read -r -p "Brand name: " brand
-      provider="openai_multimodal"
-      base_http_api_url=""
-      read -r -p "OpenAI-compatible base URL: " base_url
-      default_model=""
-      ;;
-    *) echo "Unknown ASR source." >&2; return 1 ;;
-  esac
-  read -r -p "API key: " api_key
-  [ -n "$api_key" ] || { echo "API key cannot be empty." >&2; return 1; }
-  read -r -p "Model name [${default_model}]: " model
-  model="${model:-$default_model}"
-  [ -n "$model" ] || { echo "Model name cannot be empty." >&2; return 1; }
-  read -r -p "Language hint [zh]: " language
-  language="${language:-zh}"
-  run_model_cli add-asr \
-    --brand "$brand" \
-    --provider "$provider" \
-    --base-url "$base_url" \
-    --base-http-api-url "$base_http_api_url" \
-    --api-key "$api_key" \
-    --model "$model" \
-    --language "$language" \
-    --enable-itn \
-    --activate >/dev/null
-  echo "Added and activated ASR model: ${brand}/${model}"
-}
-
-configure_models_interactive() {
-  local mode count index purpose
-  echo
-  echo "Model configuration is stored in runtime/config/models.json."
-  echo "Secrets in that file are under runtime/ and are not committed to git."
-  echo "0) Skip for now"
-  echo "1) Add one model"
-  echo "2) Add multiple models"
-  read -r -p "Select [1]: " mode
-  mode="${mode:-1}"
-  case "$mode" in
-    0) return ;;
-    1) count=1 ;;
-    2)
-      read -r -p "How many models do you want to add? " count
-      case "$count" in ''|*[!0-9]*) echo "Count must be a number." >&2; return 1 ;; esac
-      ;;
-    *) echo "Unknown option." >&2; return 1 ;;
-  esac
-  index=1
-  while [ "$index" -le "$count" ]; do
-    echo
-    echo "Model ${index}/${count}:"
-    echo "1) LLM dialogue model"
-    echo "2) ASR transcription model"
-    read -r -p "Purpose [1]: " purpose
-    purpose="${purpose:-1}"
-    case "$purpose" in
-      1) add_llm_model_interactive ;;
-      2) add_asr_model_interactive ;;
-      *) echo "Unknown purpose." >&2; return 1 ;;
-    esac
-    index=$((index + 1))
-  done
 }
 
 require_docker() {
@@ -260,17 +121,17 @@ check_port_mapping() {
 
 print_version_summary() {
   local git_version="unknown"
-  local health_json=""
   local health_version=""
+  local body
   if command -v git >/dev/null 2>&1 && [ -d "$PROJECT_DIR/.git" ]; then
     git_version="$(git -C "$PROJECT_DIR" describe --tags --always --dirty 2>/dev/null || printf 'unknown')"
   fi
-  health_json="$(curl -fsS "http://127.0.0.1:${server_port}/health" 2>/dev/null || true)"
-  if [ -n "$health_json" ]; then
-    health_version="$(printf '%s' "$health_json" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+  body="$(curl -fsS "http://127.0.0.1:${server_port}/health" 2>/dev/null || true)"
+  if [ -n "$body" ] && command -v python3 >/dev/null 2>&1; then
+    health_version="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
   fi
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v3.0.1-phase3-asr-quality"
+  echo "Configured APP_VERSION: v3.0.2-menu-asr"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -280,18 +141,15 @@ print_version_summary() {
   echo
 }
 
-main() {
-  require_docker
-  load_existing_env
-  token="$(read_token)"
-  server_port="$(read_port)"
-  ai_api_key="$(read_ai_api_key)"
-  check_firewall "$server_port"
-
+write_env_file() {
+  local server_port="$1"
+  local token="$2"
+  local ai_api_key="$3"
   cat >"$ENV_FILE" <<EOF
 SERVER_PORT=$server_port
 WS_TOKEN=$token
 ALLOW_EMPTY_TOKEN=false
+MENU_LANG=zh_CN
 AI_API_KEY=$ai_api_key
 LOG_LEVEL=INFO
 LOG_PAYLOADS=false
@@ -314,8 +172,10 @@ VAD_POSTROLL_MS=240
 MOCK_TTS_DURATION_MS=900
 MOCK_TTS_TONE_HZ=660
 ASR_PROVIDER=auto
+ASR_STRATEGY=cloud_first
 ASR_PRIMARY=configured_asr
 ASR_FALLBACK=vosk
+ASR_DEFAULT_VENDOR=qwen
 ASR_CONTEXT=小一小一,ESP32-S3,高数,数据结构,计算机科学与技术
 ASR_LANGUAGE=zh
 ASR_TIMEOUT_SECONDS=60
@@ -323,6 +183,7 @@ DASHSCOPE_API_KEY=
 DASHSCOPE_ASR_MODEL=qwen3-asr-flash
 DASHSCOPE_BASE_HTTP_API_URL=https://dashscope.aliyuncs.com/api/v1
 LLM_PROVIDER=auto
+LLM_DEFAULT_VENDOR=deepseek
 TTS_PROVIDER=edge
 DEEPSEEK_API_KEY=$ai_api_key
 DEEPSEEK_API_BASE=https://api.deepseek.com
@@ -350,10 +211,22 @@ ANSWER_MAX_CHARS=800
 TTS_MAX_CHARS=500
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v3.0.1-phase3-asr-quality
+APP_VERSION=v3.0.2-menu-asr
 EOF
+}
 
-  configure_models_interactive || true
+main() {
+  require_docker
+  load_existing_env
+  token="$(read_token)"
+  server_port="$(read_port)"
+  ai_api_key="$(read_ai_api_key)"
+  check_firewall "$server_port"
+  write_env_file "$server_port" "$token" "$ai_api_key"
+
+  load_env
+  load_language
+  SKIP_COMPOSE_AFTER_MODEL_CHANGE=true configure_models_interactive || true
 
   cd "$PROJECT_DIR"
   docker compose up -d --build
@@ -372,7 +245,7 @@ EOF
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
-  echo "Phase 3.0.1 audio format: PCM s16le, 16000 Hz, mono"
+  echo "Phase 3.0.2 audio format: PCM s16le, 16000 Hz, mono"
   echo
   echo "=== VPS common commands ==="
   echo "Cloud config file: $ENV_FILE"

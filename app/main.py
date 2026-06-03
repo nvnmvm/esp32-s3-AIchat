@@ -36,8 +36,8 @@ from app.providers.asr.vosk_local import VoskLocalASRProvider
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v3.0.1-phase3-asr-quality")
-APP_PHASE = "asr-quality-pipeline"
+APP_VERSION = os.getenv("APP_VERSION", "v3.0.2-menu-asr")
+APP_PHASE = "menu-asr-model-config"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 
@@ -52,6 +52,7 @@ LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
 ASR_PROVIDER = os.getenv("ASR_PROVIDER", "auto").lower()
 ASR_PRIMARY = os.getenv("ASR_PRIMARY", "configured_asr").lower()
 ASR_FALLBACK = os.getenv("ASR_FALLBACK", "vosk").lower()
+ASR_STRATEGY = os.getenv("ASR_STRATEGY", "cloud_first").lower()
 ASR_CONTEXT = os.getenv("ASR_CONTEXT", "小一小一,ESP32-S3,高数,数据结构,计算机科学与技术")
 ASR_LANGUAGE = os.getenv("ASR_LANGUAGE", "zh")
 ASR_TIMEOUT_SECONDS = int(os.getenv("ASR_TIMEOUT_SECONDS", "60"))
@@ -131,6 +132,7 @@ class SettingsSnapshot:
     asr_provider: str
     asr_primary: str
     asr_fallback: str
+    asr_strategy: str
     asr_context: str
     asr_language: str
     asr_timeout_seconds: int
@@ -228,6 +230,7 @@ def current_settings() -> SettingsSnapshot:
         asr_provider=ASR_PROVIDER,
         asr_primary=ASR_PRIMARY,
         asr_fallback=ASR_FALLBACK,
+        asr_strategy=ASR_STRATEGY,
         asr_context=ASR_CONTEXT,
         asr_language=ASR_LANGUAGE,
         asr_timeout_seconds=ASR_TIMEOUT_SECONDS,
@@ -858,6 +861,7 @@ async def health() -> JSONResponse:
             },
             "ai_api_key_configured": bool(AI_API_KEY or DEEPSEEK_API_KEY or active_item(config, "llm_models")),
             "asr_provider": ASR_PROVIDER,
+            "asr_strategy": ASR_STRATEGY,
             "asr_provider_chain": provider_chain(settings),
             "llm_provider": LLM_PROVIDER,
             "tts_provider": TTS_PROVIDER,

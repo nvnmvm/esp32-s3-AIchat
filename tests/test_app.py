@@ -24,7 +24,7 @@ def test_health_reports_phase3_state():
     data = response.json()
     assert data["ok"] is True
     assert data["service"] == "esp32-ai-voice-cloud"
-    assert data["phase"] == "asr-quality-pipeline"
+    assert data["phase"] == "menu-asr-model-config"
     assert data["token_required"] is True
     assert data["audio"]["sample_rate"] == 16000
     assert data["tts_mode"] == "edge"
@@ -37,6 +37,7 @@ def test_health_reports_phase3_state():
     assert data["save_debug_wav"] is False
     assert data["llm_provider"] == "auto"
     assert data["asr_provider"] == "auto"
+    assert data["asr_strategy"] == "cloud_first"
     assert "asr_provider_chain" in data
 
 

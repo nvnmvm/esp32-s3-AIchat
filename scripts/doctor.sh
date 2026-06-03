@@ -109,6 +109,7 @@ check_session_config() {
   echo "Session retention days: ${SESSION_RETENTION_DAYS:-3}"
   echo "Model config: ${MODEL_CONFIG_PATH:-runtime/config/models.json}"
   echo "ASR provider: ${ASR_PROVIDER:-auto}"
+  echo "ASR strategy: ${ASR_STRATEGY:-cloud_first}"
   echo "ASR primary: ${ASR_PRIMARY:-configured_asr}"
   echo "ASR fallback: ${ASR_FALLBACK:-vosk}"
   echo "TTS provider: ${TTS_PROVIDER:-edge}"
@@ -126,7 +127,7 @@ check_session_config() {
       python3 "$PROJECT_DIR/scripts/model_config_cli.py" --config "$model_config" list || true
     fi
   else
-    warn "Model config file not found yet. Use manage.sh > Large model brands to add one."
+    warn "Model config file not found yet. Use manage.sh > 模型与语音 to add one."
   fi
 }
 

@@ -17,9 +17,21 @@ def provider_chain(settings: Any) -> list[str]:
     provider = getattr(settings, "asr_provider", "auto")
     primary = getattr(settings, "asr_primary", "qwen_dashscope")
     fallback = getattr(settings, "asr_fallback", "vosk")
+    strategy = getattr(settings, "asr_strategy", "cloud_first")
 
     if provider == "auto":
-        chain = [primary, fallback, "phase2"]
+        if strategy in {"cloud_first", "cloud", "cost_first"}:
+            chain = [primary, fallback, "phase2"]
+        elif strategy in {"local_first", "local"}:
+            chain = ["vosk", primary, fallback, "phase2"]
+        elif strategy in {"llm_audio", "multimodal_first", "ai_audio"}:
+            chain = ["configured_asr", "qwen_dashscope", "vosk", "phase2"]
+        elif strategy in {"offline", "vosk_only"}:
+            chain = ["vosk", "phase2"]
+        elif strategy in {"accuracy_first", "accuracy"}:
+            chain = ["configured_asr", "qwen_dashscope", "openai_multimodal", "vosk", "phase2"]
+        else:
+            chain = [primary, fallback, "phase2"]
     elif provider == "cloud":
         chain = [primary, fallback]
     elif provider == "local":
@@ -65,8 +77,8 @@ def build_provider(name: str, settings: Any) -> ASRProvider:
             language=str(item.get("language") or getattr(settings, "asr_language", "zh")),
             enable_itn=bool(item.get("enable_itn", True)),
         )
-    if normalized in {"openai_audio", "openai_multimodal", "multimodal_llm"}:
-        item = configured_asr or {}
+    if normalized in {"openai_audio", "openai_multimodal", "multimodal_llm", "custom_http"}:
+        item = configured_asr if configured_asr and configured_asr.get("provider") in {"openai_multimodal", "custom_http"} else {}
         return OpenAIMultimodalASRProvider(
             api_key=str(item.get("api_key") or getattr(settings, "ai_api_key", "")),
             base_url=str(item.get("base_url") or getattr(settings, "ai_api_base", "https://api.deepseek.com")),

@@ -6,7 +6,7 @@ from typing import Any
 
 
 EMPTY_MODEL_CONFIG: dict[str, Any] = {
-    "version": 1,
+    "version": 2,
     "active_llm_id": "",
     "active_asr_id": "",
     "llm_models": [],
@@ -25,6 +25,10 @@ def load_model_config(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"Model config must be a JSON object: {path}")
     merged = dict(EMPTY_MODEL_CONFIG)
     merged.update(data)
+    try:
+        merged["version"] = max(int(merged.get("version") or 1), 2)
+    except (TypeError, ValueError):
+        merged["version"] = 2
     merged["llm_models"] = [item for item in merged.get("llm_models", []) if isinstance(item, dict)]
     merged["asr_models"] = [item for item in merged.get("asr_models", []) if isinstance(item, dict)]
     return merged
