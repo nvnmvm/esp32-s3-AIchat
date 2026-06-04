@@ -49,6 +49,25 @@ check_health() {
       ok "Local health endpoint is reachable: http://127.0.0.1:${PORT}/health"
       cat /tmp/esp32-ai-health.json
       echo
+      if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY'
+import json
+from pathlib import Path
+
+data = json.loads(Path("/tmp/esp32-ai-health.json").read_text(encoding="utf-8"))
+readiness = data.get("model_readiness") or {}
+print(
+    "Model readiness: asr_configured=%s llm_configured=%s using_local_fallback=%s"
+    % (
+        readiness.get("asr_configured"),
+        readiness.get("llm_configured"),
+        readiness.get("using_local_fallback"),
+    )
+)
+for warning in readiness.get("warnings") or []:
+    print("[WARN] " + str(warning))
+PY
+      fi
       return
     fi
     warn "Health endpoint is not ready yet; retry ${attempt}/5"

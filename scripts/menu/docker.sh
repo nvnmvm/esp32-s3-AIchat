@@ -40,6 +40,14 @@ data = json.load(sys.stdin)
 print("Health: ok=%s version=%s phase=%s" % (data.get("ok"), data.get("version"), data.get("phase")))
 print("ASR: provider=%s strategy=%s chain=%s" % (data.get("asr_provider"), data.get("asr_strategy", "cloud_first"), data.get("asr_provider_chain")))
 print("LLM: provider=%s configured=%s" % (data.get("llm_provider"), data.get("ai_api_key_configured")))
+readiness = data.get("model_readiness") or {}
+print("Readiness: asr_configured=%s llm_configured=%s local_fallback=%s" % (
+    readiness.get("asr_configured"),
+    readiness.get("llm_configured"),
+    readiness.get("using_local_fallback"),
+))
+for warning in readiness.get("warnings") or []:
+    print("Warning: %s" % warning)
 print("TTS: %s / %s" % (data.get("tts_provider"), data.get("tts_mode")))
 '
   else

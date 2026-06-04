@@ -12,6 +12,16 @@ model_list() {
   run_model_cli list
 }
 
+ask_yes_no() {
+  local prompt="$1"
+  local answer
+  read -r -p "${prompt} [y/N]: " answer
+  case "$answer" in
+    y|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 read_required() {
   local prompt="$1"
   local value
@@ -194,6 +204,40 @@ configure_models_interactive() {
   fi
 }
 
+first_run_model_wizard() {
+  load_language
+  echo
+  menu_title "$(t first_run_wizard)"
+  echo "$(t first_run_intro)"
+  echo
+
+  if ask_yes_no "$(t wizard_configure_asr)"; then
+    add_asr_model || return 1
+  else
+    echo "$(t wizard_skip_asr)"
+  fi
+
+  echo
+  if ask_yes_no "$(t wizard_configure_llm)"; then
+    add_llm_model || return 1
+  else
+    echo "$(t wizard_skip_llm)"
+  fi
+
+  echo
+  if ask_yes_no "$(t wizard_configure_strategy)"; then
+    asr_strategy_menu
+  fi
+
+  echo
+  echo "$(t wizard_status)"
+  print_health_summary || true
+  model_list || true
+  echo
+  echo "$(t wizard_done)"
+  press_enter "$(t back): "
+}
+
 switch_model_by_id() {
   local kind="$1"
   local model_id
@@ -227,8 +271,8 @@ deployed_model_menu() {
     echo
     model_list || true
     echo
-    echo "1) Select $(t llm_label)"
-    echo "2) Select $(t asr_label)"
+    echo "1) $(t select_llm_model)"
+    echo "2) $(t select_asr_model)"
     echo "0) $(t back)"
     read -r -p "$(t select): " kind
     case "$kind" in
@@ -237,8 +281,8 @@ deployed_model_menu() {
       0) return ;;
       *) warn "$(t unknown_option)"; continue ;;
     esac
-    echo "1) Switch default model"
-    echo "2) Delete model"
+    echo "1) $(t switch_default_model)"
+    echo "2) $(t delete_model)"
     echo "0) $(t back)"
     read -r -p "$(t select): " action
     case "$action" in
@@ -254,13 +298,13 @@ asr_strategy_menu() {
   while true; do
     load_env
     echo
-    menu_title "ASR strategy"
-    echo "Current: ASR_PROVIDER=${ASR_PROVIDER:-auto}, ASR_STRATEGY=${ASR_STRATEGY:-cloud_first}"
-    echo "1) 云端优先（默认：已配置云端 ASR -> Vosk -> phase2）"
-    echo "2) 本地优先（Vosk -> 已配置云端 ASR -> phase2）"
-    echo "3) 多模态大模型优先（已配置多模态 ASR -> Qwen -> Vosk）"
-    echo "4) 离线模式（Vosk -> phase2）"
-    echo "5) 手动指定 provider"
+    menu_title "$(t asr_strategy)"
+    echo "$(t current): ASR_PROVIDER=${ASR_PROVIDER:-auto}, ASR_STRATEGY=${ASR_STRATEGY:-cloud_first}"
+    echo "1) $(t asr_strategy_cloud_first)"
+    echo "2) $(t asr_strategy_local_first)"
+    echo "3) $(t asr_strategy_llm_audio)"
+    echo "4) $(t asr_strategy_offline)"
+    echo "5) $(t manual_provider)"
     echo "0) $(t back)"
     read -r -p "$(t select): " choice
     case "$choice" in
@@ -305,10 +349,10 @@ llm_model_menu() {
   while true; do
     echo
     menu_title "$(t llm_label)"
-    echo "1) Deployed models"
-    echo "2) Add model"
-    echo "3) Switch default model"
-    echo "4) Delete model"
+    echo "1) $(t deployed_models)"
+    echo "2) $(t add_model)"
+    echo "3) $(t switch_default_model)"
+    echo "4) $(t delete_model)"
     echo "0) $(t back)"
     read -r -p "$(t select): " choice
     case "$choice" in
@@ -326,11 +370,11 @@ asr_model_menu() {
   while true; do
     echo
     menu_title "$(t asr_label)"
-    echo "1) Deployed models"
-    echo "2) Add model"
-    echo "3) Switch default model"
-    echo "4) Delete model"
-    echo "5) ASR strategy"
+    echo "1) $(t deployed_models)"
+    echo "2) $(t add_model)"
+    echo "3) $(t switch_default_model)"
+    echo "4) $(t delete_model)"
+    echo "5) $(t asr_strategy)"
     echo "0) $(t back)"
     read -r -p "$(t select): " choice
     case "$choice" in
@@ -353,8 +397,8 @@ tts_menu() {
     menu_title "TTS"
     echo "TTS_PROVIDER=${TTS_PROVIDER:-edge}"
     echo "EDGE_TTS_VOICE=${EDGE_TTS_VOICE:-zh-CN-XiaoxiaoNeural}"
-    echo "1) Set provider"
-    echo "2) Set Edge voice"
+    echo "1) $(t set_tts_provider)"
+    echo "2) $(t set_edge_voice)"
     echo "0) $(t back)"
     read -r -p "$(t select): " choice
     case "$choice" in
@@ -379,25 +423,27 @@ models_voice_menu() {
     load_env
     echo
     menu_title "$(t models_voice)"
-    echo "Current LLM: ${LLM_PROVIDER:-auto}"
-    echo "Current ASR: ${ASR_PROVIDER:-auto} / ${ASR_STRATEGY:-cloud_first}"
-    echo "1) Dashboard summary"
-    echo "2) $(t llm_label)"
-    echo "3) $(t asr_label)"
-    echo "4) Deployed models"
-    echo "5) ASR strategy and default"
-    echo "6) TTS settings"
-    echo "7) View model config"
+    echo "$(t current_llm): ${LLM_PROVIDER:-auto}"
+    echo "$(t current_asr): ${ASR_PROVIDER:-auto} / ${ASR_STRATEGY:-cloud_first}"
+    echo "1) $(t first_run_wizard)"
+    echo "2) $(t model_status)"
+    echo "3) $(t llm_label)"
+    echo "4) $(t asr_label)"
+    echo "5) $(t deployed_models)"
+    echo "6) $(t asr_strategy_default)"
+    echo "7) $(t tts_settings)"
+    echo "8) $(t view_model_config)"
     echo "0) $(t back)"
     read -r -p "$(t select): " choice
     case "$choice" in
-      1) print_health_summary; model_list || true ;;
-      2) llm_model_menu ;;
-      3) asr_model_menu ;;
-      4) deployed_model_menu ;;
-      5) asr_strategy_menu ;;
-      6) tts_menu ;;
-      7) model_list ;;
+      1) first_run_model_wizard ;;
+      2) print_health_summary; model_list || true ;;
+      3) llm_model_menu ;;
+      4) asr_model_menu ;;
+      5) deployed_model_menu ;;
+      6) asr_strategy_menu ;;
+      7) tts_menu ;;
+      8) model_list ;;
       0) return ;;
       *) warn "$(t unknown_option)" ;;
     esac

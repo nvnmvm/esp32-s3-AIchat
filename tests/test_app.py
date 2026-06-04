@@ -24,7 +24,7 @@ def test_health_reports_phase3_state():
     data = response.json()
     assert data["ok"] is True
     assert data["service"] == "esp32-ai-voice-cloud"
-    assert data["phase"] == "menu-asr-model-config"
+    assert data["phase"] == "config-readiness"
     assert data["token_required"] is True
     assert data["audio"]["sample_rate"] == 16000
     assert data["tts_mode"] == "edge"
@@ -39,6 +39,9 @@ def test_health_reports_phase3_state():
     assert data["asr_provider"] == "auto"
     assert data["asr_strategy"] == "cloud_first"
     assert "asr_provider_chain" in data
+    assert "model_readiness" in data
+    assert data["model_readiness"]["asr_provider_chain"] == data["asr_provider_chain"]
+    assert isinstance(data["model_readiness"]["warnings"], list)
 
 
 def test_websocket_rejects_missing_token():

@@ -43,9 +43,11 @@ def provider_chain(settings: Any) -> list[str]:
     for name in chain:
         if name in {"configured", "configured_asr"}:
             if configured_asr:
-                resolved.append(str(configured_asr.get("provider", "openai_multimodal")))
-            else:
-                resolved.append("qwen_dashscope")
+                provider_name = str(configured_asr.get("provider", "openai_multimodal"))
+                if _cloud_provider_ready(provider_name, settings, configured_asr):
+                    resolved.append(provider_name)
+            continue
+        if provider == "auto" and _is_cloud_provider(str(name)) and not _cloud_provider_ready(str(name), settings, configured_asr):
             continue
         resolved.append(str(name))
 
@@ -124,3 +126,35 @@ def _dedupe(items: list[str]) -> list[str]:
             seen.add(item)
             result.append(item)
     return result
+
+
+def _is_cloud_provider(name: str) -> bool:
+    normalized = name.lower().replace("-", "_")
+    return normalized in {
+        "qwen",
+        "qwen_dashscope",
+        "dashscope",
+        "openai_audio",
+        "openai_multimodal",
+        "multimodal_llm",
+        "custom_http",
+    }
+
+
+def _cloud_provider_ready(name: str, settings: Any, configured_asr: dict[str, Any] | None) -> bool:
+    normalized = name.lower().replace("-", "_")
+    configured_provider = str((configured_asr or {}).get("provider") or "").lower().replace("-", "_")
+
+    if normalized in {"qwen", "qwen_dashscope", "dashscope"}:
+        configured_key = ""
+        if configured_provider in {"qwen", "qwen_dashscope", "dashscope"}:
+            configured_key = str((configured_asr or {}).get("api_key") or "")
+        return bool(configured_key or getattr(settings, "dashscope_api_key", ""))
+
+    if normalized in {"openai_audio", "openai_multimodal", "multimodal_llm", "custom_http"}:
+        configured_key = ""
+        if configured_provider in {"openai_audio", "openai_multimodal", "multimodal_llm", "custom_http"}:
+            configured_key = str((configured_asr or {}).get("api_key") or "")
+        return bool(configured_key or getattr(settings, "ai_api_key", ""))
+
+    return True

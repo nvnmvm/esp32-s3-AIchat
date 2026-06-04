@@ -70,15 +70,6 @@ read_port() {
   printf '%s' "$port"
 }
 
-read_ai_api_key() {
-  local api_key
-  read -r -p "Enter legacy DeepSeek/OpenAI-compatible API key [optional, press Enter to skip]: " api_key
-  if [ -z "$api_key" ]; then
-    api_key="${AI_API_KEY:-}"
-  fi
-  printf '%s' "$api_key"
-}
-
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "Docker is not installed. Run install.sh on a fresh VPS, or install Docker first." >&2
@@ -119,6 +110,18 @@ check_port_mapping() {
   fi
 }
 
+read_model_wizard_choice() {
+  local answer
+  echo >&2
+  echo "Model API configuration is optional." >&2
+  echo "You can start the service first, then run manage.sh > Models & Voice > First-run setup wizard." >&2
+  read -r -p "Open the first-run ASR/LLM setup wizard now? [y/N]: " answer
+  case "$answer" in
+    y|Y) printf '%s' "true" ;;
+    *) printf '%s' "false" ;;
+  esac
+}
+
 print_version_summary() {
   local git_version="unknown"
   local health_version=""
@@ -131,7 +134,7 @@ print_version_summary() {
     health_version="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
   fi
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v3.0.2-menu-asr"
+  echo "Configured APP_VERSION: v3.0.3-config-readiness"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -144,7 +147,7 @@ print_version_summary() {
 write_env_file() {
   local server_port="$1"
   local token="$2"
-  local ai_api_key="$3"
+  local ai_api_key="${AI_API_KEY:-${DEEPSEEK_API_KEY:-}}"
   cat >"$ENV_FILE" <<EOF
 SERVER_PORT=$server_port
 WS_TOKEN=$token
@@ -211,7 +214,7 @@ ANSWER_MAX_CHARS=800
 TTS_MAX_CHARS=500
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v3.0.2-menu-asr
+APP_VERSION=v3.0.3-config-readiness
 EOF
 }
 
@@ -220,16 +223,18 @@ main() {
   load_existing_env
   token="$(read_token)"
   server_port="$(read_port)"
-  ai_api_key="$(read_ai_api_key)"
+  configure_models_now="$(read_model_wizard_choice)"
   check_firewall "$server_port"
-  write_env_file "$server_port" "$token" "$ai_api_key"
+  write_env_file "$server_port" "$token"
 
   load_env
   load_language
-  SKIP_COMPOSE_AFTER_MODEL_CHANGE=true configure_models_interactive || true
 
   cd "$PROJECT_DIR"
   docker compose up -d --build
+  if [ "$configure_models_now" = "true" ]; then
+    first_run_model_wizard || true
+  fi
   check_port_mapping "$server_port"
 
   public_ip="$(curl -fsS https://api.ipify.org 2>/dev/null || hostname -I | awk '{print $1}' || true)"
@@ -245,7 +250,10 @@ main() {
   echo "Set ESP32 WS_HOST to: $public_ip"
   echo "Set ESP32 WS_PORT to: $server_port"
   echo "Set ESP32 WS_TOKEN to: $token"
-  echo "Phase 3.0.2 audio format: PCM s16le, 16000 Hz, mono"
+  echo "Phase 3.0.3 audio format: PCM s16le, 16000 Hz, mono"
+  echo
+  echo "Next model step: sudo bash $PROJECT_DIR/manage.sh > Models & Voice > First-run setup wizard"
+  echo "If you skip model APIs, the cloud still starts for ESP32 recording, OLED and speaker loopback tests."
   echo
   echo "=== VPS common commands ==="
   echo "Cloud config file: $ENV_FILE"

@@ -6,6 +6,16 @@ cd "$PROJECT_DIR"
 
 bash -n manage.sh deploy.sh scripts/menu/*.sh scripts/menu/lang/*.sh
 
+MENU_DIR="$PROJECT_DIR/scripts/menu"
+# shellcheck source=scripts/menu/i18n.sh
+. "$MENU_DIR/i18n.sh"
+MENU_LANG=zh_CN
+load_language
+[ "$(t first_run_wizard)" = "首次配置向导" ] || { echo "zh_CN i18n lookup failed." >&2; exit 1; }
+MENU_LANG=en_US
+load_language
+[ "$(t first_run_wizard)" = "First-run setup wizard" ] || { echo "en_US i18n lookup failed." >&2; exit 1; }
+
 py_bin="python3"
 if ! command -v "$py_bin" >/dev/null 2>&1; then
   py_bin="python"

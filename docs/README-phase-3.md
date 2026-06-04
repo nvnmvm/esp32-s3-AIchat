@@ -3,10 +3,10 @@
 当前 Phase 3 文档已更新到：
 
 ```text
-docs/README-phase-3.0.1.md
+docs/README-phase-3.0.3.md
 ```
 
-3.0.1 在 3.0.0 的 session 语音链路基础上，新增音频质量诊断、ASR Provider 回退、多模型 JSON 配置、部署/管理菜单和 OLED 中间页面隐藏策略。
+3.0.3 在 3.0.2 的模型与 ASR 菜单基础上，修正首次部署路径、无模型 readiness、ASR 自动兜底和首次配置向导。
 
 历史 3.0.0 固定版本见：
 

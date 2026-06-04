@@ -36,8 +36,8 @@ from app.providers.asr.vosk_local import VoskLocalASRProvider
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v3.0.2-menu-asr")
-APP_PHASE = "menu-asr-model-config"
+APP_VERSION = os.getenv("APP_VERSION", "v3.0.3-config-readiness")
+APP_PHASE = "config-readiness"
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 
@@ -248,6 +248,50 @@ def current_settings() -> SettingsSnapshot:
         ai_model=AI_MODEL,
         model_config=current_model_config(),
     )
+
+
+def model_readiness(settings: SettingsSnapshot) -> dict[str, Any]:
+    active_llm = active_item(settings.model_config, "llm_models")
+    active_asr = active_item(settings.model_config, "asr_models")
+    chain = provider_chain(settings)
+    cloud_providers = {
+        "qwen",
+        "qwen_dashscope",
+        "dashscope",
+        "openai_audio",
+        "openai_multimodal",
+        "multimodal_llm",
+        "custom_http",
+    }
+    chain_has_cloud_asr = any(name.lower().replace("-", "_") in cloud_providers for name in chain)
+    active_asr_provider = str((active_asr or {}).get("provider") or "").lower().replace("-", "_")
+    active_asr_has_key = bool((active_asr or {}).get("api_key"))
+    active_asr_can_use_env_key = (
+        active_asr_provider in {"qwen", "qwen_dashscope", "dashscope"} and bool(settings.dashscope_api_key)
+    ) or (
+        active_asr_provider in {"openai_audio", "openai_multimodal", "multimodal_llm", "custom_http"}
+        and bool(settings.ai_api_key)
+    )
+    asr_configured = bool(active_asr_has_key or active_asr_can_use_env_key or settings.dashscope_api_key or chain_has_cloud_asr)
+    llm_configured = bool(active_llm or DEEPSEEK_API_KEY or AI_API_KEY)
+    warnings: list[str] = []
+
+    if not asr_configured:
+        warnings.append("cloud ASR is not configured; using local fallback chain")
+    if not llm_configured and LLM_PROVIDER == "auto":
+        warnings.append("LLM is not configured; auto mode uses the phase3 test answer")
+    if "vosk" in chain and not settings.vosk_model_dir.exists():
+        warnings.append("Vosk fallback model is missing; first local ASR may download it or fall back to phase2")
+
+    return {
+        "asr_configured": asr_configured,
+        "llm_configured": llm_configured,
+        "using_local_fallback": not chain_has_cloud_asr,
+        "asr_provider_chain": chain,
+        "active_asr_id": settings.model_config.get("active_asr_id", ""),
+        "active_llm_id": settings.model_config.get("active_llm_id", ""),
+        "warnings": warnings,
+    }
 
 
 def client_name(websocket: WebSocket) -> str:
@@ -835,6 +879,7 @@ async def health() -> JSONResponse:
     ensure_session_dirs()
     settings = current_settings()
     config = settings.model_config
+    readiness = model_readiness(settings)
     return JSONResponse(
         {
             "ok": True,
@@ -862,7 +907,8 @@ async def health() -> JSONResponse:
             "ai_api_key_configured": bool(AI_API_KEY or DEEPSEEK_API_KEY or active_item(config, "llm_models")),
             "asr_provider": ASR_PROVIDER,
             "asr_strategy": ASR_STRATEGY,
-            "asr_provider_chain": provider_chain(settings),
+            "asr_provider_chain": readiness["asr_provider_chain"],
+            "model_readiness": readiness,
             "llm_provider": LLM_PROVIDER,
             "tts_provider": TTS_PROVIDER,
             "tts_mode": "local-test-tone" if TTS_PROVIDER == "tone" else TTS_PROVIDER,
