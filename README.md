@@ -1,17 +1,10 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v3.0.3-config-readiness`。本版本在 3.0.2 多模型菜单基础上，重点修正首次部署路径、无模型运行提示、ASR 自动兜底和模型配置向导。
+当前版本：`v4.0.0-realtime-foundation`。
 
-## 3.0.3 核心变化
+这是阶段四第一个可发布增量：新增 Qwen-ASR-Realtime、协议 v4、局部识别文本、可取消后台 turn、最近多轮上下文和按实时节奏发送的 TTS PCM。没有实时 ASR 配置时会自动回退到原批量 ASR/Vosk 链，v3 固件消息继续兼容。
 
-- 一键部署默认只配置 WebSocket token 和服务端口，不再强制填写 ASR/LLM API。
-- 部署时可选择是否立即进入模型配置向导，默认跳过；后续可在 `manage.sh > 模型与语音 > 首次配置向导` 配置。
-- `cloud_first` 在未配置云端 ASR key 时会直接使用 `Vosk -> phase2`，不再先尝试空 key 的 DashScope。
-- `/health` 新增 `model_readiness`，显示 `asr_configured`、`llm_configured`、`using_local_fallback` 和 warnings。
-- 模型与语音菜单新增“首次配置向导”，原状态查看下移为“查看当前模型状态”。
-- 模型相关菜单补齐主要中英文 i18n 文案。
-- OLED 默认仍不显示识别文本页面；回答文本直接进入滚动显示。云端默认 `SEND_ASR_TEXT=false`。
-- 3.0.3 仍是非流式一问一答方案；流式 ASR / Opus / MCP 不在本版本范围内。
+当前仍是“实时 ASR + 可打断半双工”，LLM 和 Edge TTS 尚未改为 token/句子级流式管线。详细部署、协议、验收和后续拆分计划见 [阶段四开发文档](docs/README-phase-4.md)。
 
 ## 一键部署
 
@@ -130,8 +123,21 @@ LLM_DEFAULT_VENDOR=deepseek
 MODEL_CONFIG_PATH=runtime/config/models.json
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v3.0.3-config-readiness
+APP_VERSION=v4.0.0-realtime-foundation
 ```
+
+阶段四实时 ASR 还需要在 `.env` 填写阿里云百炼业务空间：
+
+```env
+QWEN_REALTIME_ENABLED=true
+QWEN_REALTIME_WORKSPACE_ID=ws-你的业务空间ID
+QWEN_REALTIME_REGION=cn-beijing
+QWEN_REALTIME_MODEL=qwen3-asr-flash-realtime
+QWEN_REALTIME_VAD_SILENCE_MS=400
+CONVERSATION_MAX_TURNS=5
+```
+
+没有实时 ASR 配置时，服务仍会使用原来的批量 ASR/Vosk 回退链，旧版 `start_record`、`finish_record` 消息也继续兼容。
 
 推荐分工：
 

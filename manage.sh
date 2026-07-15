@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="$PROJECT_DIR/.env"
 MENU_DIR="$PROJECT_DIR/scripts/menu"
-LATEST_VERSION="v3.0.2-menu-asr"
+LATEST_VERSION="v4.0.0-realtime-foundation"
 
 # shellcheck source=scripts/menu/env.sh
 . "$MENU_DIR/env.sh"

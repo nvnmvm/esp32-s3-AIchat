@@ -17,14 +17,16 @@ def receive_json(websocket):
     return json.loads(websocket.receive_text())
 
 
-def test_health_reports_phase3_state():
+def test_health_reports_realtime_foundation_state():
     response = client.get("/health")
 
     assert response.status_code == 200
     data = response.json()
     assert data["ok"] is True
     assert data["service"] == "esp32-ai-voice-cloud"
-    assert data["phase"] == "config-readiness"
+    assert data["phase"] == "realtime-foundation"
+    assert data["protocol"] == 400
+    assert data["protocol_compatibility"] == [303, 400]
     assert data["token_required"] is True
     assert data["audio"]["sample_rate"] == 16000
     assert data["tts_mode"] == "edge"
@@ -42,6 +44,8 @@ def test_health_reports_phase3_state():
     assert "model_readiness" in data
     assert data["model_readiness"]["asr_provider_chain"] == data["asr_provider_chain"]
     assert isinstance(data["model_readiness"]["warnings"], list)
+    assert data["qwen_realtime"]["model"] == "qwen3-asr-flash-realtime"
+    assert data["conversation_max_turns"] == 5
 
 
 def test_websocket_rejects_missing_token():
@@ -62,6 +66,31 @@ def test_websocket_accepts_phase3_ping(monkeypatch):
         pong = receive_json(websocket)
         assert pong["type"] == "status"
         assert pong["state"] == "idle"
+        assert pong["protocol"] == 400
+
+
+def test_websocket_protocol_v4_handshake_and_cancel(monkeypatch):
+    monkeypatch.setattr("app.main.WS_TOKEN", "test-token")
+
+    with client.websocket_connect("/ws?token=test-token&device_id=test-device") as websocket:
+        assert receive_json(websocket)["state"] == "idle"
+        websocket.send_text(json.dumps({"type": "hello", "protocol": 400}))
+        hello = receive_json(websocket)
+        assert hello["type"] == "hello"
+        assert hello["protocol"] == 400
+        assert "barge_in" in hello["capabilities"]
+
+        websocket.send_text(json.dumps({"type": "turn_start", "protocol": 400, "turn_id": 7}))
+        ready = receive_json(websocket)
+        assert ready["type"] == "turn_ready"
+        assert ready["turn_id"] == 7
+        assert receive_json(websocket)["state"] == "recording"
+
+        websocket.send_text(json.dumps({"type": "cancel", "turn_id": 7}))
+        cancelled = receive_json(websocket)
+        assert cancelled["type"] == "turn_cancelled"
+        assert cancelled["turn_id"] == 7
+        assert receive_json(websocket)["state"] == "idle"
 
 
 def test_websocket_voice_turn_returns_answer_and_audio(monkeypatch, tmp_path):

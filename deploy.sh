@@ -134,7 +134,7 @@ print_version_summary() {
     health_version="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
   fi
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v3.0.3-config-readiness"
+  echo "Configured APP_VERSION: v4.0.0-realtime-foundation"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -167,7 +167,6 @@ AUDIO_SAMPLE_WIDTH_BYTES=2
 AUDIO_CHUNK_MS=40
 VAD_MIN_RECORDING_MS=900
 VAD_MAX_RECORDING_MS=12000
-VAD_MIN_RECORDING_BYTES=32000
 VAD_SILENCE_RMS=450
 VAD_SILENCE_CHUNKS=12
 VAD_PREROLL_MS=300
@@ -185,6 +184,14 @@ ASR_TIMEOUT_SECONDS=60
 DASHSCOPE_API_KEY=
 DASHSCOPE_ASR_MODEL=qwen3-asr-flash
 DASHSCOPE_BASE_HTTP_API_URL=https://dashscope.aliyuncs.com/api/v1
+QWEN_REALTIME_ENABLED=true
+QWEN_REALTIME_WORKSPACE_ID=
+QWEN_REALTIME_REGION=cn-beijing
+QWEN_REALTIME_WS_URL=
+QWEN_REALTIME_MODEL=qwen3-asr-flash-realtime
+QWEN_REALTIME_VAD_SILENCE_MS=400
+QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS=10
+QWEN_REALTIME_FINISH_TIMEOUT_SECONDS=8
 LLM_PROVIDER=auto
 LLM_DEFAULT_VENDOR=deepseek
 TTS_PROVIDER=edge
@@ -205,6 +212,7 @@ SESSION_ANSWERS_DIR=runtime/session/ai回答的文本
 SESSION_AUDIO_REPORT_DIR=runtime/session/audio_report
 SESSION_RETENTION_DAYS=3
 CONVERSATION_DIR=runtime/session/录音转文字
+CONVERSATION_MAX_TURNS=5
 VOSK_MODEL_DIR=runtime/models/vosk-model-small-cn-0.22
 VOSK_MODEL_URL=https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
 VOSK_AUTO_DOWNLOAD=true
@@ -212,9 +220,10 @@ EDGE_TTS_VOICE=zh-CN-XiaoxiaoNeural
 FFMPEG_BIN=ffmpeg
 ANSWER_MAX_CHARS=800
 TTS_MAX_CHARS=500
+TTS_PCM_CHUNK_MS=80
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v3.0.3-config-readiness
+APP_VERSION=v4.0.0-realtime-foundation
 EOF
 }
 

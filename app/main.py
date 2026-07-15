@@ -26,18 +26,18 @@ from fastapi.responses import JSONResponse
 from app.core.audio_utils import (
     AudioReport,
     analyze_pcm16le,
-    pcm16_rms,
 )
 from app.core.model_config import active_item, load_model_config, masked_config_summary
 from app.core.vad import RecordingBuffer, VadConfig
 from app.providers.asr.base import AsrResult
 from app.providers.asr.factory import provider_chain, transcribe_with_fallback
-from app.providers.asr.vosk_local import VoskLocalASRProvider
+from app.providers.asr.qwen_realtime import QwenRealtimeASRSession, RealtimeASREvent
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v3.0.3-config-readiness")
-APP_PHASE = "config-readiness"
+APP_VERSION = os.getenv("APP_VERSION", "v4.0.0-realtime-foundation")
+APP_PHASE = "realtime-foundation"
+PROTOCOL_VERSION = 400
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 
@@ -59,6 +59,11 @@ ASR_TIMEOUT_SECONDS = int(os.getenv("ASR_TIMEOUT_SECONDS", "60"))
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")
 DASHSCOPE_ASR_MODEL = os.getenv("DASHSCOPE_ASR_MODEL", "qwen3-asr-flash")
 DASHSCOPE_BASE_HTTP_API_URL = os.getenv("DASHSCOPE_BASE_HTTP_API_URL", "https://dashscope.aliyuncs.com/api/v1")
+QWEN_REALTIME_ENABLED = os.getenv("QWEN_REALTIME_ENABLED", "true").lower() == "true"
+QWEN_REALTIME_WORKSPACE_ID = os.getenv("QWEN_REALTIME_WORKSPACE_ID", "")
+QWEN_REALTIME_REGION = os.getenv("QWEN_REALTIME_REGION", "cn-beijing")
+QWEN_REALTIME_WS_URL = os.getenv("QWEN_REALTIME_WS_URL", "")
+QWEN_REALTIME_MODEL = os.getenv("QWEN_REALTIME_MODEL", "qwen3-asr-flash-realtime")
 
 TTS_PROVIDER = os.getenv("TTS_PROVIDER", "edge").lower()
 LOG_PAYLOADS = os.getenv("LOG_PAYLOADS", "false").lower() == "true"
@@ -111,7 +116,6 @@ AUDIO_CHUNK_MS = env_int("AUDIO_CHUNK_MS", 40)
 MAX_RECORDING_BYTES = env_int("MAX_RECORDING_BYTES", AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * 12)
 VAD_MIN_RECORDING_MS = env_int("VAD_MIN_RECORDING_MS", 900)
 VAD_MAX_RECORDING_MS = env_int("VAD_MAX_RECORDING_MS", 12000)
-VAD_MIN_RECORDING_BYTES = env_int("VAD_MIN_RECORDING_BYTES", AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES)
 VAD_SILENCE_RMS = env_int("VAD_SILENCE_RMS", 450)
 VAD_SILENCE_CHUNKS = env_int("VAD_SILENCE_CHUNKS", 12)
 VAD_PREROLL_MS = env_int("VAD_PREROLL_MS", 300)
@@ -124,6 +128,11 @@ LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 7)
 SESSION_RETENTION_DAYS = env_int("SESSION_RETENTION_DAYS", 3)
 ANSWER_MAX_CHARS = env_int("ANSWER_MAX_CHARS", 800)
 TTS_MAX_CHARS = env_int("TTS_MAX_CHARS", 500)
+TTS_PCM_CHUNK_MS = env_int("TTS_PCM_CHUNK_MS", 80)
+QWEN_REALTIME_VAD_SILENCE_MS = env_int("QWEN_REALTIME_VAD_SILENCE_MS", 400)
+QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS = env_int("QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS", 10)
+QWEN_REALTIME_FINISH_TIMEOUT_SECONDS = env_int("QWEN_REALTIME_FINISH_TIMEOUT_SECONDS", 8)
+CONVERSATION_MAX_TURNS = env_int("CONVERSATION_MAX_TURNS", 5)
 
 
 @dataclass
@@ -163,6 +172,13 @@ class VoiceSession:
     audio_report_path: Optional[Path] = None
     meta_path: Optional[Path] = None
     recording_buffer: Optional[RecordingBuffer] = None
+    protocol_version: int = 303
+    history: list[dict[str, str]] = field(default_factory=list)
+    processing_task: Optional[asyncio.Task[None]] = None
+    realtime_asr: Optional[QwenRealtimeASRSession] = None
+    realtime_event_task: Optional[asyncio.Task[None]] = None
+    cancelled: asyncio.Event = field(default_factory=asyncio.Event)
+    send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def reset_recording(self) -> None:
         self.recording = False
@@ -176,6 +192,15 @@ class VoiceSession:
         self.answer_path = None
         self.audio_report_path = None
         self.meta_path = None
+
+    def remember_turn(self, transcript: str, answer: str) -> None:
+        self.history.extend(
+            [
+                {"role": "user", "content": transcript},
+                {"role": "assistant", "content": answer},
+            ]
+        )
+        self.history = self.history[-(CONVERSATION_MAX_TURNS * 2) :]
 
 
 def configure_logging() -> None:
@@ -328,6 +353,44 @@ async def send_json(websocket: WebSocket, message_type: str, **fields: Any) -> N
     await websocket.send_text(json_text(message_type, **fields))
 
 
+async def send_session_json(
+    websocket: WebSocket,
+    session: VoiceSession,
+    message_type: str,
+    **fields: Any,
+) -> None:
+    async with session.send_lock:
+        await send_json(websocket, message_type, **fields)
+
+
+async def send_session_audio(websocket: WebSocket, session: VoiceSession, audio: bytes) -> None:
+    async with session.send_lock:
+        await websocket.send_bytes(audio)
+
+
+def realtime_asr_configured() -> bool:
+    return bool(
+        QWEN_REALTIME_ENABLED
+        and DASHSCOPE_API_KEY
+        and (QWEN_REALTIME_WORKSPACE_ID or QWEN_REALTIME_WS_URL)
+    )
+
+
+def make_realtime_asr() -> QwenRealtimeASRSession:
+    return QwenRealtimeASRSession(
+        api_key=DASHSCOPE_API_KEY,
+        workspace_id=QWEN_REALTIME_WORKSPACE_ID,
+        model=QWEN_REALTIME_MODEL,
+        region=QWEN_REALTIME_REGION,
+        ws_url=QWEN_REALTIME_WS_URL,
+        sample_rate=AUDIO_SAMPLE_RATE,
+        language=ASR_LANGUAGE,
+        vad_silence_ms=QWEN_REALTIME_VAD_SILENCE_MS,
+        connect_timeout_seconds=QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS,
+        finish_timeout_seconds=QWEN_REALTIME_FINISH_TIMEOUT_SECONDS,
+    )
+
+
 def make_tone_pcm(duration_ms: Optional[int] = None, frequency_hz: Optional[int] = None) -> bytes:
     duration_ms = duration_ms or MOCK_TTS_DURATION_MS
     frequency_hz = frequency_hz or MOCK_TTS_TONE_HZ
@@ -412,59 +475,6 @@ def write_debug_wav(device_id: str, turn_id: int, pcm: bytes) -> Optional[Path]:
     return path
 
 
-def transcribe_phase2_audio(duration_s: float, rms: float, byte_count: int) -> str:
-    if rms < VAD_SILENCE_RMS:
-        return (
-            f"阶段三收到一段音频，时长约 {duration_s:.1f} 秒，"
-            f"但音量偏低，RMS {rms:.0f}。请检查麦克风、声道、增益和供电。"
-        )
-
-    return (
-        f"阶段三收到一段可用录音，时长约 {duration_s:.1f} 秒，"
-        f"音量 RMS {rms:.0f}，PCM 字节数 {byte_count}。"
-    )
-
-
-def transcribe_vosk_wav(wav_path: Path) -> str:
-    pcm = wav_path.read_bytes()
-    report = AudioReport(
-        duration_s=0,
-        byte_count=len(pcm),
-        rms=0,
-        peak=0,
-        clipping_ratio=0,
-        zero_ratio=0,
-        dc_offset=0,
-        speech_ratio=0,
-        verdict="ok",
-        warnings=[],
-    )
-    provider = VoskLocalASRProvider(
-        model_dir=VOSK_MODEL_DIR,
-        model_url=VOSK_MODEL_URL,
-        auto_download=VOSK_AUTO_DOWNLOAD,
-        sample_rate=AUDIO_SAMPLE_RATE,
-    )
-    return provider.transcribe(wav_path, report, context=ASR_CONTEXT).text
-
-
-def transcribe_audio_file(wav_path: Path, duration_s: float, rms: float, byte_count: int) -> str:
-    report = AudioReport(
-        duration_s=duration_s,
-        byte_count=byte_count,
-        rms=rms,
-        peak=0,
-        clipping_ratio=0,
-        zero_ratio=0,
-        dc_offset=0,
-        speech_ratio=0,
-        verdict="ok" if duration_s >= 0.8 and rms >= VAD_SILENCE_RMS else "too_quiet",
-        warnings=[],
-    )
-    result = transcribe_with_fallback(wav_path, report, current_settings())
-    return result.text
-
-
 def build_phase3_answer_from_text(transcript: str) -> str:
     transcript = transcript.strip()
     if not transcript:
@@ -487,7 +497,15 @@ def strip_thinking_tags(text: str) -> str:
     return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
 
 
-def openai_compatible_chat(user_text: str, *, provider_name: str, api_key: str, base_url: str, model: str) -> str:
+def openai_compatible_chat(
+    user_text: str,
+    *,
+    provider_name: str,
+    api_key: str,
+    base_url: str,
+    model: str,
+    history: Optional[list[dict[str, str]]] = None,
+) -> str:
     if not api_key:
         raise RuntimeError(f"{provider_name} API key is not configured.")
 
@@ -502,6 +520,7 @@ def openai_compatible_chat(user_text: str, *, provider_name: str, api_key: str, 
                     "默认使用中文，不要输出 Markdown，不要输出思考过程。"
                 ),
             },
+            *(history or []),
             {"role": "user", "content": user_text},
         ],
         "stream": False,
@@ -535,7 +554,7 @@ def openai_compatible_chat(user_text: str, *, provider_name: str, api_key: str, 
     return answer
 
 
-def deepseek_chat(user_text: str) -> str:
+def deepseek_chat(user_text: str, history: Optional[list[dict[str, str]]] = None) -> str:
     settings = current_settings()
     llm_config = active_item(settings.model_config, "llm_models")
     if llm_config:
@@ -545,6 +564,7 @@ def deepseek_chat(user_text: str) -> str:
             api_key=str(llm_config.get("api_key") or ""),
             base_url=str(llm_config.get("base_url") or AI_API_BASE),
             model=str(llm_config.get("model") or AI_MODEL),
+            history=history,
         )
 
     return openai_compatible_chat(
@@ -553,10 +573,11 @@ def deepseek_chat(user_text: str) -> str:
         api_key=DEEPSEEK_API_KEY or AI_API_KEY,
         base_url=AI_API_BASE,
         model=AI_MODEL,
+        history=history,
     )
 
 
-async def build_answer_text(transcript: str) -> str:
+async def build_answer_text(transcript: str, history: Optional[list[dict[str, str]]] = None) -> str:
     if LLM_PROVIDER == "phase3":
         return build_phase3_answer_from_text(transcript)
 
@@ -569,7 +590,7 @@ async def build_answer_text(transcript: str) -> str:
 
     if should_call_llm:
         try:
-            return await asyncio.to_thread(deepseek_chat, transcript)
+            return await asyncio.to_thread(deepseek_chat, transcript, history)
         except Exception:
             if LLM_PROVIDER != "auto":
                 raise
@@ -668,11 +689,14 @@ async def build_phase3_turn(
     stem: str,
     wav_path: Path,
     audio_report: AudioReport,
+    *,
+    history: Optional[list[dict[str, str]]] = None,
+    realtime_result: Optional[AsrResult] = None,
 ) -> tuple[AsrResult, str, Path, Path, Path]:
     settings = current_settings()
-    asr_result = await asyncio.to_thread(transcribe_with_fallback, wav_path, audio_report, settings)
+    asr_result = realtime_result or await asyncio.to_thread(transcribe_with_fallback, wav_path, audio_report, settings)
     transcript_path = write_session_text(SESSION_TRANSCRIPTS_DIR, stem, asr_result.text)
-    answer_text = await build_answer_text(asr_result.text)
+    answer_text = await build_answer_text(asr_result.text, history)
     answer_path = write_session_text(SESSION_ANSWERS_DIR, stem, answer_text)
     meta_path = write_session_json(
         SESSION_AUDIO_REPORT_DIR,
@@ -707,13 +731,138 @@ def make_vad_config() -> VadConfig:
     )
 
 
+async def pump_realtime_asr_events(
+    websocket: WebSocket,
+    session: VoiceSession,
+    asr: QwenRealtimeASRSession,
+    turn_id: int,
+) -> None:
+    while session.realtime_asr is asr and session.turn_id == turn_id:
+        event: RealtimeASREvent = await asr.events.get()
+        if event.type == "partial":
+            await send_session_json(websocket, session, "asr_partial", text=event.text, turn_id=turn_id)
+        elif event.type == "final":
+            await send_session_json(
+                websocket,
+                session,
+                "asr_final",
+                text=event.text,
+                turn_id=turn_id,
+                provider="qwen_realtime",
+            )
+        elif event.type == "speech_stopped":
+            await send_session_json(websocket, session, "capture_stop", reason="server_vad", turn_id=turn_id)
+        elif event.type == "error":
+            logger.warning("Realtime ASR event turn=%d error=%s", turn_id, event.text)
+            await send_session_json(websocket, session, "asr_warning", text=event.text, turn_id=turn_id)
+
+
+async def close_realtime_asr(session: VoiceSession) -> None:
+    asr = session.realtime_asr
+    event_task = session.realtime_event_task
+    session.realtime_asr = None
+    session.realtime_event_task = None
+    if asr is not None:
+        await asr.close()
+    if event_task is not None and event_task is not asyncio.current_task() and not event_task.done():
+        event_task.cancel()
+        await asyncio.gather(event_task, return_exceptions=True)
+
+
+async def cancel_active_turn(
+    websocket: WebSocket,
+    session: VoiceSession,
+    *,
+    notify: bool,
+    clear_history: bool = False,
+) -> None:
+    turn_id = session.turn_id
+    session.cancelled.set()
+    session.reset_recording()
+    task = session.processing_task
+    session.processing_task = None
+    if task is not None and task is not asyncio.current_task() and not task.done():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await close_realtime_asr(session)
+    session.clear_transcript()
+    if clear_history:
+        session.history.clear()
+    if notify:
+        await send_session_json(websocket, session, "turn_cancelled", turn_id=turn_id)
+        await send_session_json(
+            websocket,
+            session,
+            "status",
+            text="已取消，等待唤醒",
+            state="idle",
+            turn_id=turn_id,
+        )
+
+
+async def start_turn(
+    websocket: WebSocket,
+    session: VoiceSession,
+    payload: dict[str, Any],
+) -> None:
+    if session.recording or session.processing_task is not None or session.realtime_asr is not None:
+        await cancel_active_turn(websocket, session, notify=False)
+
+    requested_turn_id = payload.get("turn_id")
+    if isinstance(requested_turn_id, int) and requested_turn_id > session.turn_id:
+        session.turn_id = requested_turn_id
+    else:
+        session.turn_id += 1
+    requested_protocol = payload.get("protocol")
+    if isinstance(requested_protocol, int):
+        session.protocol_version = requested_protocol
+
+    session.clear_transcript()
+    session.reset_recording()
+    session.cancelled = asyncio.Event()
+    session.recording = True
+    session.recording_buffer = RecordingBuffer(make_vad_config())
+
+    realtime_ready = False
+    if realtime_asr_configured():
+        asr = make_realtime_asr()
+        try:
+            await asr.start()
+            session.realtime_asr = asr
+            session.realtime_event_task = asyncio.create_task(
+                pump_realtime_asr_events(websocket, session, asr, session.turn_id),
+                name=f"qwen-events-turn-{session.turn_id}",
+            )
+            realtime_ready = True
+        except Exception:
+            logger.warning("Unable to start Qwen realtime ASR; this turn will use batch fallback.", exc_info=True)
+            await asr.close()
+
+    if str(payload.get("type") or "").strip().lower() == "turn_start":
+        await send_session_json(
+            websocket,
+            session,
+            "turn_ready",
+            turn_id=session.turn_id,
+            protocol=PROTOCOL_VERSION,
+            realtime_asr=realtime_ready,
+        )
+    await send_session_json(
+        websocket,
+        session,
+        "status",
+        text="录音中...",
+        state="recording",
+        turn_id=session.turn_id,
+    )
+
+
 async def finish_recording(websocket: WebSocket, session: VoiceSession, device_id: str, reason: str) -> None:
-    if not session.recording and not session.pcm:
-        logger.info("Ignored finish_record device_id=%s because session is not recording", device_id)
-        return
+    turn_id = session.turn_id
     if not session.pcm:
-        await send_json(websocket, "error", text="没有收到有效 PCM 音频。")
+        await send_session_json(websocket, session, "error", text="没有收到有效 PCM 音频。", turn_id=turn_id)
         session.reset_recording()
+        await close_realtime_asr(session)
         return
 
     pcm = bytes(session.pcm)
@@ -721,9 +870,9 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
     session.reset_recording()
 
     cleanup_old_session_files()
-    stem = session_file_stem(device_id, session.turn_id)
+    stem = session_file_stem(device_id, turn_id)
     session.recording_path = write_session_wav(stem, pcm)
-    debug_wav_path = write_debug_wav(device_id, session.turn_id, pcm)
+    debug_wav_path = write_debug_wav(device_id, turn_id, pcm)
     audio_report = analyze_pcm16le(
         pcm,
         sample_rate=AUDIO_SAMPLE_RATE,
@@ -744,7 +893,7 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
 
     logger.info(
         "Processed audio turn=%d bytes=%d duration_s=%.2f rms=%.1f peak=%d verdict=%s reason=%s recording_path=%s debug_wav_path=%s",
-        session.turn_id,
+        turn_id,
         len(pcm),
         audio_report.duration_s,
         audio_report.rms,
@@ -756,73 +905,151 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
     )
 
     try:
-        await send_json(websocket, "status", text="识别中...", state="asr", turn_id=session.turn_id)
+        await send_session_json(websocket, session, "status", text="识别中...", state="asr", turn_id=turn_id)
+        realtime_result: Optional[AsrResult] = None
+        if session.realtime_asr is not None:
+            try:
+                transcript = (await session.realtime_asr.finish()).strip()
+                if transcript:
+                    realtime_result = AsrResult(
+                        text=transcript,
+                        provider="qwen_realtime",
+                        raw={"model": QWEN_REALTIME_MODEL},
+                    )
+            except Exception:
+                logger.warning("Qwen realtime ASR did not produce a final result; using batch fallback.", exc_info=True)
+
         asr_result, answer_text, session.transcript_path, session.answer_path, session.meta_path = await build_phase3_turn(
             stem=stem,
             wav_path=session.recording_path,
             audio_report=audio_report,
+            history=list(session.history),
+            realtime_result=realtime_result,
         )
-        if SEND_ASR_TEXT:
-            await send_json(
+        if realtime_result is None:
+            await send_session_json(
                 websocket,
+                session,
+                "asr_final",
+                text=asr_result.text,
+                turn_id=turn_id,
+                provider=asr_result.provider,
+            )
+        if SEND_ASR_TEXT:
+            await send_session_json(
+                websocket,
+                session,
                 "asr_text",
                 text=asr_result.text,
-                turn_id=session.turn_id,
+                turn_id=turn_id,
                 transcript_file=session.transcript_path.name,
                 provider=asr_result.provider,
             )
 
-        await send_json(websocket, "status", text="思考中...", state="thinking", turn_id=session.turn_id)
+        await send_session_json(websocket, session, "status", text="思考中...", state="thinking", turn_id=turn_id)
         display_answer = limit_text(answer_text, ANSWER_MAX_CHARS)
+        session.remember_turn(asr_result.text, answer_text)
         if SEND_ANSWER_TEXT:
-            await send_json(
+            await send_session_json(
                 websocket,
+                session,
                 "answer_text",
                 text=display_answer,
-                turn_id=session.turn_id,
+                turn_id=turn_id,
                 answer_file=session.answer_path.name,
                 answer_chars=len(answer_text),
                 truncated=display_answer != " ".join(answer_text.split()),
             )
 
-        await send_json(websocket, "status", text="语音合成中...", state="tts", turn_id=session.turn_id)
+        await send_session_json(websocket, session, "status", text="语音合成中...", state="tts", turn_id=turn_id)
         audio = await synthesize_tts_pcm(answer_text)
-        await send_json(
+        await send_session_json(
             websocket,
+            session,
             "audio_start",
             sample_rate=AUDIO_SAMPLE_RATE,
             format="pcm_s16le",
             text=display_answer,
-            turn_id=session.turn_id,
+            turn_id=turn_id,
         )
-        chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES // 10
+        chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * TTS_PCM_CHUNK_MS // 1000
         for start in range(0, len(audio), chunk_size):
-            await websocket.send_bytes(audio[start:start + chunk_size])
+            if session.cancelled.is_set():
+                raise asyncio.CancelledError
+            chunk = audio[start:start + chunk_size]
+            await send_session_audio(websocket, session, chunk)
+            await asyncio.sleep(len(chunk) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES))
 
-        await send_json(websocket, "audio_end", turn_id=session.turn_id)
-        await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
+        await send_session_json(websocket, session, "audio_end", turn_id=turn_id)
+        await send_session_json(websocket, session, "status", text="空闲，等待唤醒", state="idle", turn_id=turn_id)
+    except asyncio.CancelledError:
+        logger.info("Cancelled turn=%d device_id=%s", turn_id, device_id)
+        raise
     except Exception:
-        logger.exception("Failed to process turn=%d device_id=%s", session.turn_id, device_id)
-        await send_json(websocket, "error", text="云端处理本轮语音失败，请查看 VPS 日志。")
-        await send_json(websocket, "status", text="空闲，等待唤醒", state="idle")
+        logger.exception("Failed to process turn=%d device_id=%s", turn_id, device_id)
+        await send_session_json(websocket, session, "error", text="云端处理本轮语音失败，请查看 VPS 日志。", turn_id=turn_id)
+        await send_session_json(websocket, session, "status", text="空闲，等待唤醒", state="idle", turn_id=turn_id)
     finally:
+        await close_realtime_asr(session)
         session.clear_transcript()
+
+
+def schedule_finish_recording(
+    websocket: WebSocket,
+    session: VoiceSession,
+    device_id: str,
+    reason: str,
+) -> None:
+    if session.processing_task is not None and not session.processing_task.done():
+        logger.info("Ignored duplicate finish turn=%d reason=%s", session.turn_id, reason)
+        return
+    if not session.recording and not session.pcm:
+        logger.info("Ignored finish_record device_id=%s because session is not recording", device_id)
+        return
+    session.recording = False
+    task = asyncio.create_task(
+        finish_recording(websocket, session, device_id, reason),
+        name=f"voice-turn-{session.turn_id}",
+    )
+    session.processing_task = task
+
+    def clear_finished_task(finished: asyncio.Task[None]) -> None:
+        if session.processing_task is finished:
+            session.processing_task = None
+        if not finished.cancelled() and finished.exception() is not None:
+            error = finished.exception()
+            logger.error(
+                "Voice turn task ended unexpectedly",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+
+    task.add_done_callback(clear_finished_task)
 
 
 async def handle_json_message(websocket: WebSocket, session: VoiceSession, device_id: str, payload: dict[str, Any]) -> None:
     message_type = str(payload.get("type", "")).strip().lower()
 
-    if message_type == "start_record":
-        session.clear_transcript()
-        session.turn_id += 1
-        session.reset_recording()
-        session.recording = True
-        session.recording_buffer = RecordingBuffer(make_vad_config())
-        await send_json(websocket, "status", text="录音中...", state="recording", turn_id=session.turn_id)
+    if message_type == "hello":
+        requested_protocol = payload.get("protocol")
+        if isinstance(requested_protocol, int):
+            session.protocol_version = requested_protocol
+        await send_session_json(
+            websocket,
+            session,
+            "hello",
+            protocol=PROTOCOL_VERSION,
+            version=APP_VERSION,
+            audio={"format": "pcm_s16le", "sample_rate": AUDIO_SAMPLE_RATE, "channels": AUDIO_CHANNELS},
+            capabilities=["asr_partial", "barge_in", "cancel", "legacy_v303"],
+        )
         return
 
-    if message_type in {"finish_record", "vad_end"}:
-        await finish_recording(websocket, session, device_id, message_type)
+    if message_type in {"turn_start", "start_record"}:
+        await start_turn(websocket, session, payload)
+        return
+
+    if message_type in {"turn_end", "finish_record", "vad_end"}:
+        schedule_finish_recording(websocket, session, device_id, message_type)
         return
 
     if message_type == "audio_stats":
@@ -830,22 +1057,33 @@ async def handle_json_message(websocket: WebSocket, session: VoiceSession, devic
         return
 
     if message_type == "cancel":
-        session.clear_transcript()
-        session.reset_recording()
-        await send_json(websocket, "status", text="已取消，等待唤醒", state="idle")
+        await cancel_active_turn(websocket, session, notify=True)
         return
 
     if message_type == "stop":
-        session.clear_transcript()
-        session.reset_recording()
-        await send_json(websocket, "status", text="已结束对话", state="idle")
+        await cancel_active_turn(websocket, session, notify=False, clear_history=True)
+        await send_session_json(
+            websocket,
+            session,
+            "status",
+            text="已结束对话",
+            state="idle",
+            turn_id=session.turn_id,
+        )
         return
 
     if message_type == "ping":
-        await send_json(websocket, "status", text="phase3 ok", state="idle")
+        await send_session_json(
+            websocket,
+            session,
+            "status",
+            text="phase4 ok",
+            state="idle",
+            protocol=PROTOCOL_VERSION,
+        )
         return
 
-    await send_json(websocket, "error", text=f"未知消息类型: {message_type or '<empty>'}")
+    await send_session_json(websocket, session, "error", text=f"未知消息类型: {message_type or '<empty>'}")
 
 
 async def handle_binary_message(websocket: WebSocket, session: VoiceSession, device_id: str, data: bytes) -> None:
@@ -862,16 +1100,22 @@ async def handle_binary_message(websocket: WebSocket, session: VoiceSession, dev
         return
 
     if len(session.pcm) + len(data) > MAX_RECORDING_BYTES:
-        await finish_recording(websocket, session, device_id, "max_recording_bytes")
+        schedule_finish_recording(websocket, session, device_id, "max_recording_bytes")
         return
 
     session.pcm.extend(data)
+    if session.realtime_asr is not None:
+        try:
+            await session.realtime_asr.append_audio(data)
+        except Exception:
+            logger.warning("Failed to stream PCM to realtime ASR; keeping batch fallback.", exc_info=True)
+            await close_realtime_asr(session)
     if session.recording_buffer is None:
         session.recording_buffer = RecordingBuffer(make_vad_config())
     should_finish, finish_reason = session.recording_buffer.feed(data)
     session.silence_chunks = session.recording_buffer.silence_chunks_seen
     if should_finish:
-        await finish_recording(websocket, session, device_id, finish_reason or "vad")
+        schedule_finish_recording(websocket, session, device_id, finish_reason or "vad")
 
 
 @app.get("/health")
@@ -886,6 +1130,8 @@ async def health() -> JSONResponse:
             "service": APP_NAME,
             "version": APP_VERSION,
             "phase": APP_PHASE,
+            "protocol": PROTOCOL_VERSION,
+            "protocol_compatibility": [303, PROTOCOL_VERSION],
             "token_required": not ALLOW_EMPTY_TOKEN,
             "max_ws_message_bytes": MAX_WS_MESSAGE_BYTES,
             "max_recording_bytes": MAX_RECORDING_BYTES,
@@ -929,11 +1175,22 @@ async def health() -> JSONResponse:
             "vosk_auto_download": VOSK_AUTO_DOWNLOAD,
             "dashscope_asr_model": DASHSCOPE_ASR_MODEL,
             "dashscope_key_configured": bool(DASHSCOPE_API_KEY),
+            "qwen_realtime": {
+                "enabled": QWEN_REALTIME_ENABLED,
+                "configured": realtime_asr_configured(),
+                "model": QWEN_REALTIME_MODEL,
+                "region": QWEN_REALTIME_REGION,
+                "workspace_configured": bool(QWEN_REALTIME_WORKSPACE_ID),
+                "custom_ws_url_configured": bool(QWEN_REALTIME_WS_URL),
+                "vad_silence_ms": QWEN_REALTIME_VAD_SILENCE_MS,
+            },
             "edge_tts_voice": EDGE_TTS_VOICE,
             "tts_decoder": "miniaudio-primary-ffmpeg-fallback",
             "ffmpeg_bin": FFMPEG_BIN,
             "answer_max_chars": ANSWER_MAX_CHARS,
             "tts_max_chars": TTS_MAX_CHARS,
+            "tts_pcm_chunk_ms": TTS_PCM_CHUNK_MS,
+            "conversation_max_turns": CONVERSATION_MAX_TURNS,
             "send_asr_text": SEND_ASR_TEXT,
             "send_answer_text": SEND_ANSWER_TEXT,
             "model_config_path": str(MODEL_CONFIG_PATH),
@@ -959,7 +1216,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     await websocket.accept()
     logger.info("ESP32 connected peer=%s device_id=%s phase=%s", peer, device_id, APP_PHASE)
-    await send_json(websocket, "status", text="云端已连接，等待唤醒", state="idle")
+    await send_session_json(websocket, session, "status", text="云端已连接，等待唤醒", state="idle")
 
     try:
         while True:
@@ -985,11 +1242,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
                 try:
                     payload = json.loads(text)
                 except json.JSONDecodeError:
-                    await send_json(websocket, "error", text="阶段三协议需要 JSON 文本消息。")
+                    await send_session_json(websocket, session, "error", text="协议 v4 需要 JSON 文本消息。")
                     continue
 
                 if not isinstance(payload, dict):
-                    await send_json(websocket, "error", text="JSON 消息必须是对象。")
+                    await send_session_json(websocket, session, "error", text="JSON 消息必须是对象。")
                     continue
 
                 await handle_json_message(websocket, session, device_id, payload)
@@ -1000,4 +1257,4 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("ESP32 disconnected peer=%s device_id=%s", peer, device_id)
     finally:
-        session.clear_transcript()
+        await cancel_active_turn(websocket, session, notify=False)
