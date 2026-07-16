@@ -48,7 +48,7 @@ choose_llm_vendor() {
   read -r -p "Select [1]: " choice
   choice="${choice:-1}"
   case "$choice" in
-    1) LLM_BRAND="deepseek"; LLM_BASE_URL="https://api.deepseek.com"; LLM_DEFAULT_MODEL="deepseek-chat" ;;
+    1) LLM_BRAND="deepseek"; LLM_BASE_URL="https://api.deepseek.com"; LLM_DEFAULT_MODEL="deepseek-v4-flash" ;;
     2) LLM_BRAND="qwen"; LLM_BASE_URL="https://dashscope.aliyuncs.com/compatible-mode/v1"; LLM_DEFAULT_MODEL="qwen-flash" ;;
     3) LLM_BRAND="doubao"; LLM_BASE_URL="https://ark.cn-beijing.volces.com/api/v3"; LLM_DEFAULT_MODEL="doubao-1-5-pro-32k-250115" ;;
     4) LLM_BRAND="kimi"; LLM_BASE_URL="https://api.moonshot.cn/v1"; LLM_DEFAULT_MODEL="moonshot-v1-8k" ;;

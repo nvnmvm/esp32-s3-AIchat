@@ -7,13 +7,13 @@
       "id": "llm-001",
       "brand": "deepseek",
       "provider": "openai_compatible",
-      "name": "DeepSeek Chat",
+      "name": "DeepSeek V4 Flash",
       "remark": "默认 AI 对话模型",
       "base_url": "https://api.deepseek.com",
       "api_key": "replace-with-your-api-key",
-      "model": "deepseek-chat",
+      "model": "deepseek-v4-flash",
       "enabled": true,
-      "updated_at": "2026-06-03T00:00:00+00:00"
+      "updated_at": "2026-07-16T00:00:00+00:00"
     }
   ],
   "asr_models": [

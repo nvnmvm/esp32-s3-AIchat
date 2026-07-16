@@ -33,7 +33,7 @@ def test_model_config_cli_adds_remark_and_masks_keys(tmp_path):
         "--api-key",
         "sk-1234567890",
         "--model",
-        "deepseek-chat",
+        "deepseek-v4-flash",
         "--activate",
     ).stdout.strip()
     asr = run_cli(
@@ -84,7 +84,7 @@ def test_model_config_cli_switches_and_deletes(tmp_path):
         "--api-key",
         "sk-first",
         "--model",
-        "deepseek-chat",
+        "deepseek-v4-flash",
         "--activate",
     ).stdout.strip()
     second = run_cli(
