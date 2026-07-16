@@ -7,7 +7,14 @@ import time
 
 from fastapi.testclient import TestClient
 
-from app.main import VoiceSession, app, cleanup_old_session_files, handle_binary_message
+from app.main import (
+    VoiceSession,
+    app,
+    cancel_active_turn,
+    cleanup_old_session_files,
+    handle_binary_message,
+    stream_answer_and_audio,
+)
 
 
 client = TestClient(app)
@@ -17,14 +24,16 @@ def receive_json(websocket):
     return json.loads(websocket.receive_text())
 
 
-def test_health_reports_realtime_foundation_state():
+def test_health_reports_streaming_pipeline_state():
     response = client.get("/health")
 
     assert response.status_code == 200
     data = response.json()
     assert data["ok"] is True
     assert data["service"] == "esp32-ai-voice-cloud"
-    assert data["phase"] == "realtime-foundation"
+    assert data["version"] == "v4.1.0-streaming-pipeline"
+    assert data["version_config_matches"] is True
+    assert data["phase"] == "streaming-pipeline"
     assert data["protocol"] == 400
     assert data["protocol_compatibility"] == [303, 400]
     assert data["token_required"] is True
@@ -38,6 +47,11 @@ def test_health_reports_realtime_foundation_state():
     assert "audio_report" in data["session_dirs"]
     assert data["save_debug_wav"] is False
     assert data["llm_provider"] == "auto"
+    assert data["llm_streaming_enabled"] is True
+    assert data["llm_disable_thinking"] is True
+    assert data["llm_max_tokens"] == 512
+    assert data["llm_sentence_max_chars"] == 80
+    assert data["tts_sentence_queue_size"] == 4
     assert data["asr_provider"] == "auto"
     assert data["asr_strategy"] == "cloud_first"
     assert "asr_provider_chain" in data
@@ -79,6 +93,8 @@ def test_websocket_protocol_v4_handshake_and_cancel(monkeypatch):
         assert hello["type"] == "hello"
         assert hello["protocol"] == 400
         assert "barge_in" in hello["capabilities"]
+        assert "answer_delta" in hello["capabilities"]
+        assert "sentence_tts" in hello["capabilities"]
 
         websocket.send_text(json.dumps({"type": "turn_start", "protocol": 400, "turn_id": 7}))
         ready = receive_json(websocket)
@@ -138,6 +154,7 @@ def test_websocket_voice_turn_returns_answer_and_audio(monkeypatch, tmp_path):
                 got_audio = True
 
         assert "asr_text" not in seen_types
+        assert "answer_delta" in seen_types
         assert "answer_text" in seen_types
         assert "audio_start" in seen_types
         assert "audio_end" in seen_types
@@ -149,6 +166,103 @@ def test_websocket_voice_turn_returns_answer_and_audio(monkeypatch, tmp_path):
         assert len(list((tmp_path / "session" / "audio_report").glob("*.audio_report.json"))) == 1
         assert len(list((tmp_path / "session" / "audio_report").glob("*.turn_meta.json"))) == 1
         assert len(list((tmp_path / "audio").glob("*.wav"))) == 1
+
+
+def test_streaming_pipeline_cancel_stops_tts_before_audio(monkeypatch, tmp_path):
+    tts_started = asyncio.Event()
+
+    async def fake_stream_answer_chunks(_transcript, _history):
+        yield "第一句话。"
+        await asyncio.sleep(60)
+
+    async def slow_tts(_text):
+        tts_started.set()
+        await asyncio.sleep(60)
+        return b"never-sent"
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_text(self, payload):
+            self.messages.append(json.loads(payload))
+
+        async def send_bytes(self, payload):
+            self.messages.append({"type": "binary", "bytes": payload})
+
+    monkeypatch.setattr("app.main.stream_answer_chunks", fake_stream_answer_chunks)
+    monkeypatch.setattr("app.main.synthesize_tts_pcm", slow_tts)
+    monkeypatch.setattr("app.main.SESSION_ANSWERS_DIR", tmp_path / "answers")
+
+    async def run_cancel():
+        websocket = FakeWebSocket()
+        session = VoiceSession(turn_id=9)
+        session.cancelled = asyncio.Event()
+        task = asyncio.create_task(
+            stream_answer_and_audio(
+                websocket,
+                session,
+                transcript="测试",
+                history=[],
+                stem="cancel-test",
+                turn_id=9,
+            )
+        )
+        session.processing_task = task
+        await asyncio.wait_for(tts_started.wait(), timeout=1)
+        await cancel_active_turn(websocket, session, notify=True)
+        return task, websocket.messages
+
+    task, messages = asyncio.run(run_cancel())
+    assert task.cancelled()
+    assert any(message["type"] == "answer_delta" for message in messages)
+    assert any(message["type"] == "turn_cancelled" for message in messages)
+    assert not any(message["type"] == "audio_start" for message in messages)
+
+
+def test_streaming_pipeline_caps_answer_and_tts_text(monkeypatch, tmp_path):
+    spoken = []
+
+    async def fake_stream_answer_chunks(_transcript, _history):
+        yield "一" * 40
+
+    async def fake_tts(text):
+        spoken.append(text)
+        return b"\x00\x00"
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send_text(self, payload):
+            self.messages.append(json.loads(payload))
+
+        async def send_bytes(self, _payload):
+            pass
+
+    monkeypatch.setattr("app.main.stream_answer_chunks", fake_stream_answer_chunks)
+    monkeypatch.setattr("app.main.synthesize_tts_pcm", fake_tts)
+    monkeypatch.setattr("app.main.SESSION_ANSWERS_DIR", tmp_path / "answers")
+    monkeypatch.setattr("app.main.TTS_MAX_CHARS", 20)
+
+    async def run_pipeline():
+        websocket = FakeWebSocket()
+        session = VoiceSession(turn_id=10)
+        result = await stream_answer_and_audio(
+            websocket,
+            session,
+            transcript="测试",
+            history=[],
+            stem="limit-test",
+            turn_id=10,
+        )
+        return result, websocket.messages
+
+    (answer, _answer_path), messages = asyncio.run(run_pipeline())
+    final = next(message for message in messages if message["type"] == "answer_text")
+    assert len(answer) == 20
+    assert "".join(spoken) == answer
+    assert final["truncated"] is True
 
 
 def test_session_retention_cleanup_removes_old_files(monkeypatch, tmp_path):

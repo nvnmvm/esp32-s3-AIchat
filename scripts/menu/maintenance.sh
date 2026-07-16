@@ -3,7 +3,7 @@
 can_preserve_update() {
   local version="${APP_VERSION:-}"
   case "$version" in
-    v2.0.1-phase2|v2.0.2-phase2|v2.1.*|v3.*) return 0 ;;
+    v2.0.1-phase2|v2.0.2-phase2|v2.1.*|v3.*|v4.*) return 0 ;;
     *) return 1 ;;
   esac
 }

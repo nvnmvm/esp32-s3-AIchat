@@ -84,7 +84,7 @@ def build_provider(name: str, settings: Any) -> ASRProvider:
         return OpenAIMultimodalASRProvider(
             api_key=str(item.get("api_key") or getattr(settings, "ai_api_key", "")),
             base_url=str(item.get("base_url") or getattr(settings, "ai_api_base", "https://api.deepseek.com")),
-            model=str(item.get("model") or getattr(settings, "ai_model", "deepseek-chat")),
+            model=str(item.get("model") or getattr(settings, "ai_model", "deepseek-v4-flash")),
             timeout_seconds=int(getattr(settings, "asr_timeout_seconds", 60)),
             brand=str(item.get("brand") or "openai-compatible"),
         )

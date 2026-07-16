@@ -1,10 +1,10 @@
 # ESP32-S3 AI 对话机器人云端服务
 
-当前版本：`v4.0.0-realtime-foundation`。
+当前版本：`v4.1.0-streaming-pipeline`。
 
-这是阶段四第一个可发布增量：新增 Qwen-ASR-Realtime、协议 v4、局部识别文本、可取消后台 turn、最近多轮上下文和按实时节奏发送的 TTS PCM。没有实时 ASR 配置时会自动回退到原批量 ASR/Vosk 链，v3 固件消息继续兼容。
+这是阶段 4.1 可发布增量：在 Qwen-ASR-Realtime、协议 v4、可取消 turn 和异步播放基础上，加入 OpenAI-compatible/DeepSeek SSE 回答、`answer_delta`、按标点分句、句子级 Edge TTS 队列和边生成边播放。没有实时供应商配置时仍会自动回退，v3 固件消息继续兼容。
 
-当前仍是“实时 ASR + 可打断半双工”，LLM 和 Edge TTS 尚未改为 token/句子级流式管线。详细部署、协议、验收和后续拆分计划见 [阶段四开发文档](docs/README-phase-4.md)。
+当前是“实时 ASR + 流式 LLM + 分句 TTS + 可打断半双工”。Edge TTS 每句话仍需先完成一次合成，并非供应商原生 PCM 流；没有 AEC，不能宣称真全双工。详细部署、协议、验收和后续拆分计划见 [阶段四开发文档](docs/README-phase-4.md)。
 
 ## 一键部署
 
@@ -123,8 +123,15 @@ LLM_DEFAULT_VENDOR=deepseek
 MODEL_CONFIG_PATH=runtime/config/models.json
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v4.0.0-realtime-foundation
+LLM_STREAMING_ENABLED=true
+LLM_DISABLE_THINKING=true
+LLM_MAX_TOKENS=512
+LLM_SENTENCE_MAX_CHARS=80
+TTS_SENTENCE_QUEUE_SIZE=4
+APP_VERSION=v4.1.0-streaming-pipeline
 ```
+
+这里的 `APP_VERSION` 只供管理菜单记录部署版本和判断升级路径；实际运行代码版本以 `/health.version` 为准。
 
 阶段四实时 ASR 还需要在 `.env` 填写阿里云百炼业务空间：
 
@@ -198,6 +205,8 @@ curl -fsS http://127.0.0.1:8000/health
 - `model_config_exists`
 - `models` 的脱敏摘要
 - `session_dirs.audio_report`
+- `llm_streaming_enabled`、`llm_sentence_max_chars`
+- `tts_sentence_queue_size`
 - VAD 阈值和录音限制
 
 ## 本地 / VPS 验证
@@ -211,5 +220,10 @@ bash scripts/smoke_manage.sh
 Docker 构建：
 
 ```bash
-docker build -t esp32-ai-voice-cloud:3.0.3 .
+docker build -t esp32-ai-voice-cloud:4.1.0 .
 ```
+
+## 发布说明
+
+- [v4.1 流式管线发布说明](RELEASE-v4.1.0-streaming-pipeline.md)
+- [阶段四详细开发与验收文档](docs/README-phase-4.md)

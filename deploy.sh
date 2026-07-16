@@ -134,7 +134,7 @@ print_version_summary() {
     health_version="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
   fi
   echo "=== Cloud version ==="
-  echo "Configured APP_VERSION: v4.0.0-realtime-foundation"
+  echo "Expected code version: v4.1.0-streaming-pipeline"
   echo "Git code version: ${git_version}"
   if [ -n "$health_version" ]; then
     echo "Running /health version: ${health_version}"
@@ -197,10 +197,14 @@ LLM_DEFAULT_VENDOR=deepseek
 TTS_PROVIDER=edge
 DEEPSEEK_API_KEY=$ai_api_key
 DEEPSEEK_API_BASE=https://api.deepseek.com
-DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-flash
 AI_API_BASE=https://api.deepseek.com
-AI_MODEL=deepseek-chat
+AI_MODEL=deepseek-v4-flash
 LLM_TIMEOUT_SECONDS=30
+LLM_MAX_TOKENS=512
+LLM_STREAMING_ENABLED=true
+LLM_DISABLE_THINKING=true
+LLM_SENTENCE_MAX_CHARS=80
 MODEL_CONFIG_PATH=runtime/config/models.json
 TTS_TIMEOUT_SECONDS=45
 SAVE_DEBUG_WAV=false
@@ -221,9 +225,10 @@ FFMPEG_BIN=ffmpeg
 ANSWER_MAX_CHARS=800
 TTS_MAX_CHARS=500
 TTS_PCM_CHUNK_MS=80
+TTS_SENTENCE_QUEUE_SIZE=4
 SEND_ASR_TEXT=false
 SEND_ANSWER_TEXT=true
-APP_VERSION=v4.0.0-realtime-foundation
+APP_VERSION=v4.1.0-streaming-pipeline
 EOF
 }
 

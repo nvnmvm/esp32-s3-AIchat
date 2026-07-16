@@ -16,6 +16,7 @@ import time
 import urllib.error
 import urllib.request
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -32,11 +33,14 @@ from app.core.vad import RecordingBuffer, VadConfig
 from app.providers.asr.base import AsrResult
 from app.providers.asr.factory import provider_chain, transcribe_with_fallback
 from app.providers.asr.qwen_realtime import QwenRealtimeASRSession, RealtimeASREvent
+from app.providers.llm.openai_stream import stream_openai_compatible_chat
+from app.services.text_stream import SentenceAccumulator, ThinkingTagFilter
 
 
 APP_NAME = "esp32-ai-voice-cloud"
-APP_VERSION = os.getenv("APP_VERSION", "v4.0.0-realtime-foundation")
-APP_PHASE = "realtime-foundation"
+APP_VERSION = "v4.1.0-streaming-pipeline"
+CONFIGURED_APP_VERSION = os.getenv("APP_VERSION", APP_VERSION)
+APP_PHASE = "streaming-pipeline"
 PROTOCOL_VERSION = 400
 WS_TOKEN = os.getenv("WS_TOKEN", "")
 ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
@@ -44,10 +48,12 @@ ALLOW_EMPTY_TOKEN = os.getenv("ALLOW_EMPTY_TOKEN", "false").lower() == "true"
 AI_API_KEY = os.getenv("AI_API_KEY", "")
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", AI_API_KEY)
 DEEPSEEK_API_BASE = os.getenv("DEEPSEEK_API_BASE", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 AI_API_BASE = os.getenv("AI_API_BASE", DEEPSEEK_API_BASE)
 AI_MODEL = os.getenv("AI_MODEL", DEEPSEEK_MODEL)
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "auto").lower()
+LLM_STREAMING_ENABLED = os.getenv("LLM_STREAMING_ENABLED", "true").lower() == "true"
+LLM_DISABLE_THINKING = os.getenv("LLM_DISABLE_THINKING", "true").lower() == "true"
 
 ASR_PROVIDER = os.getenv("ASR_PROVIDER", "auto").lower()
 ASR_PRIMARY = os.getenv("ASR_PRIMARY", "configured_asr").lower()
@@ -123,12 +129,15 @@ VAD_POSTROLL_MS = env_int("VAD_POSTROLL_MS", 240)
 MOCK_TTS_DURATION_MS = env_int("MOCK_TTS_DURATION_MS", 900)
 MOCK_TTS_TONE_HZ = env_int("MOCK_TTS_TONE_HZ", 660)
 LLM_TIMEOUT_SECONDS = env_int("LLM_TIMEOUT_SECONDS", 30)
+LLM_MAX_TOKENS = env_int("LLM_MAX_TOKENS", 512)
 TTS_TIMEOUT_SECONDS = env_int("TTS_TIMEOUT_SECONDS", 45)
 LOG_RETENTION_DAYS = env_int("LOG_RETENTION_DAYS", 7)
 SESSION_RETENTION_DAYS = env_int("SESSION_RETENTION_DAYS", 3)
 ANSWER_MAX_CHARS = env_int("ANSWER_MAX_CHARS", 800)
 TTS_MAX_CHARS = env_int("TTS_MAX_CHARS", 500)
 TTS_PCM_CHUNK_MS = env_int("TTS_PCM_CHUNK_MS", 80)
+LLM_SENTENCE_MAX_CHARS = max(16, env_int("LLM_SENTENCE_MAX_CHARS", 80))
+TTS_SENTENCE_QUEUE_SIZE = env_int("TTS_SENTENCE_QUEUE_SIZE", 4)
 QWEN_REALTIME_VAD_SILENCE_MS = env_int("QWEN_REALTIME_VAD_SILENCE_MS", 400)
 QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS = env_int("QWEN_REALTIME_CONNECT_TIMEOUT_SECONDS", 10)
 QWEN_REALTIME_FINISH_TIMEOUT_SECONDS = env_int("QWEN_REALTIME_FINISH_TIMEOUT_SECONDS", 8)
@@ -307,6 +316,16 @@ def model_readiness(settings: SettingsSnapshot) -> dict[str, Any]:
         warnings.append("LLM is not configured; auto mode uses the phase3 test answer")
     if "vosk" in chain and not settings.vosk_model_dir.exists():
         warnings.append("Vosk fallback model is missing; first local ASR may download it or fall back to phase2")
+    active_llm_model = str((active_llm or {}).get("model") or AI_MODEL)
+    active_llm_brand = str((active_llm or {}).get("brand") or AI_API_BASE).lower()
+    if "deepseek" in active_llm_brand and active_llm_model in {"deepseek-chat", "deepseek-reasoner"}:
+        warnings.append(
+            f"DeepSeek compatibility alias {active_llm_model} is deprecated after 2026-07-24; use deepseek-v4-flash"
+        )
+    if CONFIGURED_APP_VERSION != APP_VERSION:
+        warnings.append(
+            f"APP_VERSION in .env is stale ({CONFIGURED_APP_VERSION}); running code is {APP_VERSION}"
+        )
 
     return {
         "asr_configured": asr_configured,
@@ -505,6 +524,7 @@ def openai_compatible_chat(
     base_url: str,
     model: str,
     history: Optional[list[dict[str, str]]] = None,
+    disable_thinking: bool = False,
 ) -> str:
     if not api_key:
         raise RuntimeError(f"{provider_name} API key is not configured.")
@@ -525,7 +545,10 @@ def openai_compatible_chat(
         ],
         "stream": False,
         "temperature": 0.7,
+        "max_tokens": LLM_MAX_TOKENS,
     }
+    if disable_thinking:
+        payload["thinking"] = {"type": "disabled"}
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -554,26 +577,35 @@ def openai_compatible_chat(
     return answer
 
 
-def deepseek_chat(user_text: str, history: Optional[list[dict[str, str]]] = None) -> str:
+def current_llm_target() -> tuple[str, str, str, str]:
     settings = current_settings()
     llm_config = active_item(settings.model_config, "llm_models")
     if llm_config:
-        return openai_compatible_chat(
-            user_text,
-            provider_name=str(llm_config.get("brand") or "configured-llm"),
-            api_key=str(llm_config.get("api_key") or ""),
-            base_url=str(llm_config.get("base_url") or AI_API_BASE),
-            model=str(llm_config.get("model") or AI_MODEL),
-            history=history,
+        return (
+            str(llm_config.get("brand") or "configured-llm"),
+            str(llm_config.get("api_key") or ""),
+            str(llm_config.get("base_url") or AI_API_BASE),
+            str(llm_config.get("model") or AI_MODEL),
         )
 
+    return "DeepSeek", DEEPSEEK_API_KEY or AI_API_KEY, AI_API_BASE, AI_MODEL
+
+
+def target_supports_thinking_control(provider_name: str, base_url: str, model: str) -> bool:
+    return "deepseek" in f"{provider_name} {base_url} {model}".lower()
+
+
+def deepseek_chat(user_text: str, history: Optional[list[dict[str, str]]] = None) -> str:
+    provider_name, api_key, base_url, model = current_llm_target()
     return openai_compatible_chat(
         user_text,
-        provider_name="DeepSeek",
-        api_key=DEEPSEEK_API_KEY or AI_API_KEY,
-        base_url=AI_API_BASE,
-        model=AI_MODEL,
+        provider_name=provider_name,
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
         history=history,
+        disable_thinking=LLM_DISABLE_THINKING
+        and target_supports_thinking_control(provider_name, base_url, model),
     )
 
 
@@ -597,6 +629,56 @@ async def build_answer_text(transcript: str, history: Optional[list[dict[str, st
             logger.warning("Configured LLM failed in auto mode; falling back to phase3 answer.", exc_info=True)
 
     return build_phase3_answer_from_text(transcript)
+
+
+async def stream_answer_chunks(
+    transcript: str,
+    history: Optional[list[dict[str, str]]] = None,
+) -> AsyncIterator[str]:
+    """Yield clean LLM deltas, with the existing non-streaming path as fallback."""
+
+    if LLM_PROVIDER == "phase3" or not LLM_STREAMING_ENABLED:
+        yield await build_answer_text(transcript, history)
+        return
+
+    settings = current_settings()
+    has_configured_llm = active_item(settings.model_config, "llm_models") is not None
+    has_env_key = bool(DEEPSEEK_API_KEY or AI_API_KEY)
+    should_call_llm = LLM_PROVIDER in {"deepseek", "openai", "openai-compatible", "auto"} and (
+        has_configured_llm or has_env_key or LLM_PROVIDER != "auto"
+    )
+    if not should_call_llm:
+        yield build_phase3_answer_from_text(transcript)
+        return
+
+    provider_name, api_key, base_url, model = current_llm_target()
+    emitted = False
+    try:
+        async for delta in stream_openai_compatible_chat(
+            transcript,
+            provider_name=provider_name,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            timeout_seconds=LLM_TIMEOUT_SECONDS,
+            max_tokens=LLM_MAX_TOKENS,
+            history=history,
+            disable_thinking=LLM_DISABLE_THINKING
+            and target_supports_thinking_control(provider_name, base_url, model),
+        ):
+            emitted = True
+            yield delta
+    except Exception:
+        if emitted:
+            logger.warning(
+                "Streaming LLM ended after partial output; keeping the usable partial answer.",
+                exc_info=True,
+            )
+            return
+        if LLM_PROVIDER != "auto":
+            raise
+        logger.warning("Streaming LLM failed in auto mode; using the phase3 fallback answer.", exc_info=True)
+        yield build_phase3_answer_from_text(transcript)
 
 
 def ffmpeg_to_pcm_s16le(media_path: Path) -> bytes:
@@ -685,19 +767,16 @@ async def synthesize_tts_pcm(text: str) -> bytes:
     return make_tone_pcm()
 
 
-async def build_phase3_turn(
+async def build_asr_turn(
     stem: str,
     wav_path: Path,
     audio_report: AudioReport,
     *,
-    history: Optional[list[dict[str, str]]] = None,
     realtime_result: Optional[AsrResult] = None,
-) -> tuple[AsrResult, str, Path, Path, Path]:
+) -> tuple[AsrResult, Path, Path]:
     settings = current_settings()
     asr_result = realtime_result or await asyncio.to_thread(transcribe_with_fallback, wav_path, audio_report, settings)
     transcript_path = write_session_text(SESSION_TRANSCRIPTS_DIR, stem, asr_result.text)
-    answer_text = await build_answer_text(asr_result.text, history)
-    answer_path = write_session_text(SESSION_ANSWERS_DIR, stem, answer_text)
     meta_path = write_session_json(
         SESSION_AUDIO_REPORT_DIR,
         stem,
@@ -711,9 +790,144 @@ async def build_phase3_turn(
                 "fallback_from": asr_result.fallback_from,
             },
             "audio_report": audio_report.to_dict(),
+            "pipeline": {
+                "llm_streaming": LLM_STREAMING_ENABLED,
+                "sentence_max_chars": LLM_SENTENCE_MAX_CHARS,
+                "tts_sentence_queue_size": TTS_SENTENCE_QUEUE_SIZE,
+            },
         },
     )
-    return asr_result, answer_text, transcript_path, answer_path, meta_path
+    return asr_result, transcript_path, meta_path
+
+
+async def send_pcm_paced(websocket: WebSocket, session: VoiceSession, audio: bytes) -> None:
+    chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * TTS_PCM_CHUNK_MS // 1000
+    for start in range(0, len(audio), chunk_size):
+        if session.cancelled.is_set():
+            raise asyncio.CancelledError
+        chunk = audio[start : start + chunk_size]
+        await send_session_audio(websocket, session, chunk)
+        await asyncio.sleep(len(chunk) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES))
+
+
+async def stream_answer_and_audio(
+    websocket: WebSocket,
+    session: VoiceSession,
+    *,
+    transcript: str,
+    history: list[dict[str, str]],
+    stem: str,
+    turn_id: int,
+) -> tuple[str, Path]:
+    """Run LLM, sentence TTS and PCM playback concurrently with bounded queues."""
+
+    sentence_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=TTS_SENTENCE_QUEUE_SIZE)
+    audio_queue: asyncio.Queue[Optional[tuple[str, bytes]]] = asyncio.Queue(maxsize=TTS_SENTENCE_QUEUE_SIZE)
+
+    async def produce_sentences() -> tuple[str, Path]:
+        thinking_filter = ThinkingTagFilter()
+        accumulator = SentenceAccumulator(LLM_SENTENCE_MAX_CHARS)
+        answer_parts: list[str] = []
+        sent_display_chars = 0
+        answer_chars = 0
+        generation_truncated = False
+
+        async def consume_clean_text(clean_text: str) -> None:
+            nonlocal answer_chars, generation_truncated, sent_display_chars
+            if not clean_text:
+                return
+            remaining = TTS_MAX_CHARS - answer_chars
+            if remaining <= 0:
+                generation_truncated = True
+                return
+            if len(clean_text) > remaining:
+                clean_text = clean_text[:remaining]
+                generation_truncated = True
+            answer_parts.append(clean_text)
+            answer_chars += len(clean_text)
+            if SEND_ANSWER_TEXT and sent_display_chars < ANSWER_MAX_CHARS:
+                visible_delta = clean_text[: ANSWER_MAX_CHARS - sent_display_chars]
+                if visible_delta:
+                    await send_session_json(
+                        websocket,
+                        session,
+                        "answer_delta",
+                        text=visible_delta,
+                        turn_id=turn_id,
+                    )
+                    sent_display_chars += len(visible_delta)
+            for sentence in accumulator.feed(clean_text):
+                await sentence_queue.put(sentence)
+
+        async for delta in stream_answer_chunks(transcript, history):
+            if session.cancelled.is_set():
+                raise asyncio.CancelledError
+            await consume_clean_text(thinking_filter.feed(delta))
+            if generation_truncated:
+                break
+        if not generation_truncated:
+            await consume_clean_text(thinking_filter.flush())
+        for sentence in accumulator.flush():
+            await sentence_queue.put(sentence)
+
+        answer_text = "".join(answer_parts).strip()
+        if not answer_text:
+            raise RuntimeError("LLM returned an empty answer after filtering.")
+        answer_path = write_session_text(SESSION_ANSWERS_DIR, stem, answer_text)
+        if SEND_ANSWER_TEXT:
+            display_answer = limit_text(answer_text, ANSWER_MAX_CHARS)
+            await send_session_json(
+                websocket,
+                session,
+                "answer_text",
+                text=display_answer,
+                turn_id=turn_id,
+                answer_file=answer_path.name,
+                answer_chars=len(answer_text),
+                truncated=generation_truncated or display_answer != " ".join(answer_text.split()),
+            )
+        await sentence_queue.put(None)
+        return answer_text, answer_path
+
+    async def synthesize_sentences() -> None:
+        while True:
+            sentence = await sentence_queue.get()
+            if sentence is None:
+                await audio_queue.put(None)
+                return
+            audio = await synthesize_tts_pcm(sentence)
+            await audio_queue.put((sentence, audio))
+
+    async def play_audio() -> None:
+        started = False
+        while True:
+            item = await audio_queue.get()
+            if item is None:
+                if not started:
+                    raise RuntimeError("TTS pipeline produced no audio.")
+                await send_session_json(websocket, session, "audio_end", turn_id=turn_id)
+                return
+            sentence, audio = item
+            if not started:
+                await send_session_json(websocket, session, "status", text="语音合成中...", state="tts", turn_id=turn_id)
+                await send_session_json(
+                    websocket,
+                    session,
+                    "audio_start",
+                    sample_rate=AUDIO_SAMPLE_RATE,
+                    format="pcm_s16le",
+                    text=limit_text(sentence, ANSWER_MAX_CHARS),
+                    turn_id=turn_id,
+                )
+                started = True
+            await send_pcm_paced(websocket, session, audio)
+
+    async with asyncio.TaskGroup() as task_group:
+        producer_task = task_group.create_task(produce_sentences(), name=f"llm-turn-{turn_id}")
+        task_group.create_task(synthesize_sentences(), name=f"tts-turn-{turn_id}")
+        task_group.create_task(play_audio(), name=f"playback-turn-{turn_id}")
+
+    return producer_task.result()
 
 
 def make_vad_config() -> VadConfig:
@@ -919,11 +1133,10 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
             except Exception:
                 logger.warning("Qwen realtime ASR did not produce a final result; using batch fallback.", exc_info=True)
 
-        asr_result, answer_text, session.transcript_path, session.answer_path, session.meta_path = await build_phase3_turn(
+        asr_result, session.transcript_path, session.meta_path = await build_asr_turn(
             stem=stem,
             wav_path=session.recording_path,
             audio_report=audio_report,
-            history=list(session.history),
             realtime_result=realtime_result,
         )
         if realtime_result is None:
@@ -947,40 +1160,15 @@ async def finish_recording(websocket: WebSocket, session: VoiceSession, device_i
             )
 
         await send_session_json(websocket, session, "status", text="思考中...", state="thinking", turn_id=turn_id)
-        display_answer = limit_text(answer_text, ANSWER_MAX_CHARS)
-        session.remember_turn(asr_result.text, answer_text)
-        if SEND_ANSWER_TEXT:
-            await send_session_json(
-                websocket,
-                session,
-                "answer_text",
-                text=display_answer,
-                turn_id=turn_id,
-                answer_file=session.answer_path.name,
-                answer_chars=len(answer_text),
-                truncated=display_answer != " ".join(answer_text.split()),
-            )
-
-        await send_session_json(websocket, session, "status", text="语音合成中...", state="tts", turn_id=turn_id)
-        audio = await synthesize_tts_pcm(answer_text)
-        await send_session_json(
+        answer_text, session.answer_path = await stream_answer_and_audio(
             websocket,
             session,
-            "audio_start",
-            sample_rate=AUDIO_SAMPLE_RATE,
-            format="pcm_s16le",
-            text=display_answer,
+            transcript=asr_result.text,
+            history=list(session.history),
+            stem=stem,
             turn_id=turn_id,
         )
-        chunk_size = AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES * TTS_PCM_CHUNK_MS // 1000
-        for start in range(0, len(audio), chunk_size):
-            if session.cancelled.is_set():
-                raise asyncio.CancelledError
-            chunk = audio[start:start + chunk_size]
-            await send_session_audio(websocket, session, chunk)
-            await asyncio.sleep(len(chunk) / (AUDIO_SAMPLE_RATE * AUDIO_SAMPLE_WIDTH_BYTES))
-
-        await send_session_json(websocket, session, "audio_end", turn_id=turn_id)
+        session.remember_turn(asr_result.text, answer_text)
         await send_session_json(websocket, session, "status", text="空闲，等待唤醒", state="idle", turn_id=turn_id)
     except asyncio.CancelledError:
         logger.info("Cancelled turn=%d device_id=%s", turn_id, device_id)
@@ -1040,7 +1228,7 @@ async def handle_json_message(websocket: WebSocket, session: VoiceSession, devic
             protocol=PROTOCOL_VERSION,
             version=APP_VERSION,
             audio={"format": "pcm_s16le", "sample_rate": AUDIO_SAMPLE_RATE, "channels": AUDIO_CHANNELS},
-            capabilities=["asr_partial", "barge_in", "cancel", "legacy_v303"],
+            capabilities=["asr_partial", "answer_delta", "sentence_tts", "barge_in", "cancel", "legacy_v303"],
         )
         return
 
@@ -1129,6 +1317,8 @@ async def health() -> JSONResponse:
             "ok": True,
             "service": APP_NAME,
             "version": APP_VERSION,
+            "configured_app_version": CONFIGURED_APP_VERSION,
+            "version_config_matches": CONFIGURED_APP_VERSION == APP_VERSION,
             "phase": APP_PHASE,
             "protocol": PROTOCOL_VERSION,
             "protocol_compatibility": [303, PROTOCOL_VERSION],
@@ -1156,6 +1346,10 @@ async def health() -> JSONResponse:
             "asr_provider_chain": readiness["asr_provider_chain"],
             "model_readiness": readiness,
             "llm_provider": LLM_PROVIDER,
+            "llm_streaming_enabled": LLM_STREAMING_ENABLED,
+            "llm_disable_thinking": LLM_DISABLE_THINKING,
+            "llm_max_tokens": LLM_MAX_TOKENS,
+            "llm_sentence_max_chars": LLM_SENTENCE_MAX_CHARS,
             "tts_provider": TTS_PROVIDER,
             "tts_mode": "local-test-tone" if TTS_PROVIDER == "tone" else TTS_PROVIDER,
             "session_dir": str(SESSION_DIR),
@@ -1190,6 +1384,7 @@ async def health() -> JSONResponse:
             "answer_max_chars": ANSWER_MAX_CHARS,
             "tts_max_chars": TTS_MAX_CHARS,
             "tts_pcm_chunk_ms": TTS_PCM_CHUNK_MS,
+            "tts_sentence_queue_size": TTS_SENTENCE_QUEUE_SIZE,
             "conversation_max_turns": CONVERSATION_MAX_TURNS,
             "send_asr_text": SEND_ASR_TEXT,
             "send_answer_text": SEND_ANSWER_TEXT,
